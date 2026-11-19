@@ -1,5 +1,6 @@
 """SQLite persistence layer for JARVIS conversations, sessions, long-term memory, settings, and custom commands."""
 
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -82,6 +83,15 @@ def initialize_memory():
                 action_type TEXT NOT NULL DEFAULT 'prompt',
                 payload TEXT NOT NULL,
                 description TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # WhatsApp Contacts Address Book (Name -> Phone mapping)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+                name TEXT PRIMARY KEY COLLATE NOCASE,
+                phone TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -441,6 +451,56 @@ def delete_custom_command(command_id):
         connection.execute(
             "DELETE FROM custom_commands WHERE id = ?",
             (command_id,)
+        )
+
+
+# ==========================================
+# WHATSAPP CONTACTS ADDRESS BOOK
+# ==========================================
+
+def save_whatsapp_contact(name: str, phone: str):
+    clean_n = (name or "").strip()
+    clean_p = re.sub(r"[^\d+]", "", (phone or "").strip())
+    if not clean_n or not clean_p:
+        raise ValueError("Contact name and phone number cannot be empty.")
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO whatsapp_contacts (name, phone)
+            VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET phone = excluded.phone
+            """,
+            (clean_n, clean_p),
+        )
+
+
+def get_whatsapp_contact(name: str):
+    clean_n = (name or "").strip()
+    if not clean_n:
+        return None
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT phone FROM whatsapp_contacts WHERE name = ? COLLATE NOCASE",
+            (clean_n,),
+        ).fetchone()
+        return row[0] if row else None
+
+
+def list_whatsapp_contacts():
+    with get_connection() as connection:
+        return connection.execute(
+            "SELECT name, phone, created_at FROM whatsapp_contacts ORDER BY name ASC"
+        ).fetchall()
+
+
+def delete_whatsapp_contact(name: str):
+    clean_n = (name or "").strip()
+    if not clean_n:
+        return
+    with get_connection() as connection:
+        connection.execute(
+            "DELETE FROM whatsapp_contacts WHERE name = ? COLLATE NOCASE",
+            (clean_n,),
         )
 
 

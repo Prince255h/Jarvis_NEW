@@ -81,6 +81,7 @@ class AutomationToolsPage(QWidget):
         self.refresh_rag_files()
         self.refresh_plugins()
         self.refresh_custom_commands()
+        self._refresh_wa_contacts()
 
     # ==========================================
     # TAB 1: DESKTOP CONTROL (2.1, 2.2, 2.3, 2.7, 2.8, 2.9)
@@ -178,15 +179,29 @@ class AutomationToolsPage(QWidget):
         self.wa_msg_input.returnPressed.connect(self._send_whatsapp_ui)
         wa_send_btn = QPushButton("SEND VIA CHROME")
         wa_send_btn.clicked.connect(self._send_whatsapp_ui)
-        wa_call_btn = QPushButton("CALL CONTACT")
-        wa_call_btn.clicked.connect(self._call_whatsapp_ui)
+        wa_call_btn = QPushButton("VOICE CALL")
+        wa_call_btn.clicked.connect(lambda: self._call_whatsapp_ui("voice"))
+        wa_vid_btn = QPushButton("VIDEO CALL")
+        wa_vid_btn.clicked.connect(lambda: self._call_whatsapp_ui("video"))
 
         wa_msg_row.addWidget(self.wa_msg_input, 3)
         wa_msg_row.addWidget(wa_send_btn, 1)
         wa_msg_row.addWidget(wa_call_btn, 1)
+        wa_msg_row.addWidget(wa_vid_btn, 1)
+
+        wa_book_row = QHBoxLayout()
+        self.wa_contacts_combo = QComboBox()
+        self.wa_contacts_combo.addItem("Select from Address Book...")
+        self.wa_contacts_combo.currentTextChanged.connect(self._on_contact_combo_changed)
+        wa_save_btn = QPushButton("SAVE TO ADDRESS BOOK")
+        wa_save_btn.clicked.connect(self._save_contact_ui)
+        wa_book_row.addWidget(QLabel("Address Book:"))
+        wa_book_row.addWidget(self.wa_contacts_combo, 3)
+        wa_book_row.addWidget(wa_save_btn, 1)
 
         wa_layout.addLayout(wa_top_row)
         wa_layout.addLayout(wa_msg_row)
+        wa_layout.addLayout(wa_book_row)
         layout.addWidget(wa_box)
 
         # 2.9 Approved Terminal Commands
@@ -258,17 +273,59 @@ class AutomationToolsPage(QWidget):
         except Exception as err:
             self._log_desktop(f"[WHATSAPP ERROR] {err}")
 
-    def _call_whatsapp_ui(self):
+    def _call_whatsapp_ui(self, call_type="voice"):
         from tools.whatsapp import call_whatsapp_contact
         contact = self.wa_contact_input.text().strip()
         if not contact:
             QMessageBox.warning(self, "WhatsApp Automation", "Please specify a contact name or phone number.")
             return
         try:
-            res = call_whatsapp_contact(contact=contact, call_type="voice")
+            res = call_whatsapp_contact(contact=contact, call_type=call_type)
             self._log_desktop(res)
         except Exception as err:
             self._log_desktop(f"[WHATSAPP ERROR] {err}")
+
+    def _refresh_wa_contacts(self):
+        from core.memory import list_whatsapp_contacts
+        try:
+            contacts = list_whatsapp_contacts()
+            self.wa_contacts_combo.blockSignals(True)
+            self.wa_contacts_combo.clear()
+            self.wa_contacts_combo.addItem("Select from Address Book...")
+            for name, phone, _ in contacts:
+                self.wa_contacts_combo.addItem(f"{name} ({phone})", userData=phone)
+            self.wa_contacts_combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_contact_combo_changed(self, text):
+        idx = self.wa_contacts_combo.currentIndex()
+        if idx > 0:
+            name = self.wa_contacts_combo.currentText().split(" (")[0]
+            self.wa_contact_input.setText(name)
+
+    def _save_contact_ui(self):
+        from core.memory import save_whatsapp_contact
+        contact = self.wa_contact_input.text().strip()
+        if not contact:
+            QMessageBox.warning(self, "Address Book", "Please enter contact name or phone in Target Contact field.")
+            return
+
+        from PySide6.QtWidgets import QInputDialog
+        phone, ok = QInputDialog.getText(
+            self,
+            "Save Contact",
+            f"Enter phone number for '{contact}' (e.g. +919876543210):",
+            QLineEdit.EchoMode.Normal,
+            contact if contact.startswith("+") or contact.isdigit() else "",
+        )
+        if ok and phone.strip():
+            try:
+                save_whatsapp_contact(contact, phone.strip())
+                self._log_desktop(f"Saved contact '{contact}' with phone {phone.strip()} to Address Book.")
+                self._refresh_wa_contacts()
+            except Exception as err:
+                self._log_desktop(f"[ADDRESS BOOK ERROR] {err}")
 
     def _take_screenshot(self):
         ans = QMessageBox.question(

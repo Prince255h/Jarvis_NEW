@@ -1222,9 +1222,12 @@ class JarvisWindow(QMainWindow):
             if not arg or arg.lower() in ("help", "?"):
                 help_text = (
                     "### WhatsApp Web Automation (Google Chrome)\n"
-                    "- `/whatsapp <contact_name_or_number> | <message>` — Search contact on WhatsApp Web & send message\n"
-                    "- `/whatsapp call <contact_name_or_number>` — Search contact & prime voice call\n"
-                    "- `/whatsapp video <contact_name_or_number>` — Search contact & prime video call\n"
+                    "- `/whatsapp <contact_name_or_number> | <message>` — Send message via WhatsApp Web in Chrome\n"
+                    "- `/whatsapp call <contact_name_or_number>` — Call contact (Voice Call in Chrome)\n"
+                    "- `/whatsapp video <contact_name_or_number>` — Call contact (Video Call in Chrome)\n"
+                    "- `/whatsapp add <name> <phone>` — Save contact to Address Book (e.g. `/whatsapp add Mom +919876543210`)\n"
+                    "- `/whatsapp list` — View all saved Address Book contacts\n"
+                    "- `/whatsapp remove <name>` — Remove a contact\n"
                     "- `/whatsapp open` — Open WhatsApp Web in Google Chrome\n\n"
                     "**Examples:**\n"
                     "- `/whatsapp Alex | Hey Alex, see you at 6`\n"
@@ -1239,6 +1242,38 @@ class JarvisWindow(QMainWindow):
                 res = open_whatsapp_web()
                 self.add_message("J.A.R.V.I.S", res, subtitle="WHATSAPP")
                 self.tts.speak("Opening WhatsApp Web in Google Chrome.")
+                return True
+
+            if arg.lower() in ("list", "contacts"):
+                from core.memory import list_whatsapp_contacts
+                contacts = list_whatsapp_contacts()
+                if not contacts:
+                    msg = "No saved contacts yet. Add with `/whatsapp add <name> <phone>` (e.g. `/whatsapp add Mom +919876543210`)."
+                else:
+                    lines = "\n".join(f"- **{c[0]}**: `{c[1]}`" for c in contacts)
+                    msg = f"### Saved WhatsApp Address Book\n{lines}"
+                self.add_message("SYSTEM", msg)
+                return True
+
+            if arg.lower().startswith("add "):
+                parts = arg[4:].strip().split(maxsplit=1)
+                if len(parts) == 2:
+                    from core.memory import save_whatsapp_contact
+                    name, phone = parts[0], parts[1]
+                    try:
+                        save_whatsapp_contact(name, phone)
+                        self.add_message("SYSTEM", f"Saved contact **{name}** (`{phone}`) to WhatsApp Address Book.")
+                    except Exception as err:
+                        self.add_message("ERROR", str(err))
+                else:
+                    self.add_message("SYSTEM", "Usage: `/whatsapp add <name> <phone>` (e.g. `/whatsapp add Mom +919876543210`)")
+                return True
+
+            if arg.lower().startswith("remove ") or arg.lower().startswith("del "):
+                name = arg.split(maxsplit=1)[1].strip()
+                from core.memory import delete_whatsapp_contact
+                delete_whatsapp_contact(name)
+                self.add_message("SYSTEM", f"Removed contact **{name}** from WhatsApp Address Book.")
                 return True
 
             if arg.lower().startswith("call "):
@@ -1455,6 +1490,23 @@ class JarvisWindow(QMainWindow):
             self.add_message("J.A.R.V.I.S", res, subtitle="WHATSAPP")
             self.tts.speak("Opening WhatsApp Web in Google Chrome.")
             return True
+
+        # Save contact in address book ("save contact Mom as +919876543210")
+        m_save = re.match(r"^(?:save|add)\s+contact\s+([a-z0-9 _]+?)\s+(?:as\s+|with\s+number\s+)?([+\d\s\-()]{7,25})$", lower)
+        if m_save:
+            c_name = m_save.group(1).strip()
+            c_phone = m_save.group(2).strip()
+            from core.memory import save_whatsapp_contact
+            try:
+                save_whatsapp_contact(c_name, c_phone)
+                self.add_message("YOU", message)
+                res = f"Saved contact **{c_name}** (`{c_phone}`) to WhatsApp Address Book."
+                self.add_message("J.A.R.V.I.S", res, subtitle="WHATSAPP")
+                self.tts.speak(f"Saved contact {c_name} to address book.")
+                return True
+            except Exception as err:
+                self.add_message("ERROR", str(err))
+                return True
 
         # 2. "message <contact> on whatsapp saying <text>" / "send message to <contact> on whatsapp: <text>" / "whatsapp <contact> <text>"
         m_w_msg1 = re.match(
