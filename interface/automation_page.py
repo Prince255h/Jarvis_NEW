@@ -41,6 +41,7 @@ from tools.computer import (
 )
 from tools.documents import extract_document_text
 from tools.plugins import plugin_manager
+from tools.rag import list_indexed_files, clear_rag_index
 from core.memory import (
     save_custom_command,
     get_custom_commands,
@@ -69,10 +70,15 @@ class AutomationToolsPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_desktop_tab(), "Desktop Control")
         self.tabs.addTab(self._build_files_docs_tab(), "Files, PDF & Docs")
+        self.tabs.addTab(self._build_rag_tab(), "Knowledge Base (RAG)")
+        self.tabs.addTab(self._build_clipboard_tab(), "Smart Clipboard")
         self.tabs.addTab(self._build_web_yt_tab(), "Web & YouTube AI")
         self.tabs.addTab(self._build_plugins_commands_tab(), "Plugins & Commands")
         layout.addWidget(self.tabs, 1)
 
+        self._clip_history = []
+        self._install_clipboard_watcher()
+        self.refresh_rag_files()
         self.refresh_plugins()
         self.refresh_custom_commands()
 
@@ -153,6 +159,36 @@ class AutomationToolsPage(QWidget):
         sb_layout.addWidget(shot_btn)
         layout.addWidget(sys_box)
 
+        # WhatsApp Web in Google Chrome Automation
+        wa_box = QGroupBox("WhatsApp Web Chrome Automation (Messaging & Calling)")
+        wa_layout = QVBoxLayout(wa_box)
+
+        wa_top_row = QHBoxLayout()
+        self.wa_contact_input = QLineEdit()
+        self.wa_contact_input.setPlaceholderText("Contact Name (e.g. Alex, Mom) or Phone (+91...)")
+        wa_open_btn = QPushButton("OPEN WHATSAPP WEB")
+        wa_open_btn.clicked.connect(self._open_whatsapp_web_ui)
+        wa_top_row.addWidget(QLabel("Target Contact:"))
+        wa_top_row.addWidget(self.wa_contact_input, 3)
+        wa_top_row.addWidget(wa_open_btn, 1)
+
+        wa_msg_row = QHBoxLayout()
+        self.wa_msg_input = QLineEdit()
+        self.wa_msg_input.setPlaceholderText("Enter message to search, type & send via Chrome...")
+        self.wa_msg_input.returnPressed.connect(self._send_whatsapp_ui)
+        wa_send_btn = QPushButton("SEND VIA CHROME")
+        wa_send_btn.clicked.connect(self._send_whatsapp_ui)
+        wa_call_btn = QPushButton("CALL CONTACT")
+        wa_call_btn.clicked.connect(self._call_whatsapp_ui)
+
+        wa_msg_row.addWidget(self.wa_msg_input, 3)
+        wa_msg_row.addWidget(wa_send_btn, 1)
+        wa_msg_row.addWidget(wa_call_btn, 1)
+
+        wa_layout.addLayout(wa_top_row)
+        wa_layout.addLayout(wa_msg_row)
+        layout.addWidget(wa_box)
+
         # 2.9 Approved Terminal Commands
         term_box = QGroupBox("Approved Terminal Command Executor (2.9)")
         tb_layout = QVBoxLayout(term_box)
@@ -201,6 +237,39 @@ class AutomationToolsPage(QWidget):
         except Exception as err:
             self._log_desktop(f"[ERROR] {err}")
 
+    def _open_whatsapp_web_ui(self):
+        from tools.whatsapp import open_whatsapp_web
+        try:
+            self._log_desktop(open_whatsapp_web())
+        except Exception as err:
+            self._log_desktop(f"[WHATSAPP ERROR] {err}")
+
+    def _send_whatsapp_ui(self):
+        from tools.whatsapp import send_whatsapp_message
+        contact = self.wa_contact_input.text().strip()
+        msg = self.wa_msg_input.text().strip()
+        if not contact:
+            QMessageBox.warning(self, "WhatsApp Automation", "Please specify a contact name or phone number.")
+            return
+        try:
+            res = send_whatsapp_message(contact=contact, message=msg, auto_send=True)
+            self._log_desktop(res)
+            self.wa_msg_input.clear()
+        except Exception as err:
+            self._log_desktop(f"[WHATSAPP ERROR] {err}")
+
+    def _call_whatsapp_ui(self):
+        from tools.whatsapp import call_whatsapp_contact
+        contact = self.wa_contact_input.text().strip()
+        if not contact:
+            QMessageBox.warning(self, "WhatsApp Automation", "Please specify a contact name or phone number.")
+            return
+        try:
+            res = call_whatsapp_contact(contact=contact, call_type="voice")
+            self._log_desktop(res)
+        except Exception as err:
+            self._log_desktop(f"[WHATSAPP ERROR] {err}")
+
     def _take_screenshot(self):
         ans = QMessageBox.question(
             self,
@@ -218,6 +287,9 @@ class AutomationToolsPage(QWidget):
             self._log_desktop(f"[Screenshot Error] {err}")
 
     def _run_terminal_command(self):
+        if self._worker is not None:
+            self._log_desktop("[Busy] Wait for the current background task to finish.")
+            return
         cmd = self.cmd_input.text().strip()
         if not cmd:
             return
@@ -235,15 +307,12 @@ class AutomationToolsPage(QWidget):
             self._log_desktop(f"Cancelled command: {cmd}")
             return
 
-        try:
-            res = run_approved_command(cmd)
-            self._log_desktop(f"$ {cmd}\n[Exit Code: {res['returncode']}]")
-            if res["stdout"]:
-                self._log_desktop(res["stdout"])
-            if res["stderr"]:
-                self._log_desktop(f"[STDERR]\n{res['stderr']}")
-        except Exception as err:
-            self._log_desktop(f"[Command Error] {err}")
+        self._log_desktop(f"[Executing] $ {cmd} ...")
+        self._worker = JarvisWorker(message=cmd, task="run_command")
+        self._worker.task_completed.connect(lambda _t, out: self._log_desktop(out))
+        self._worker.error_occurred.connect(lambda err: self._log_desktop(f"[Command Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
 
     # ==========================================
     # TAB 2: FILES, FOLDER ORGANIZER, PDF & DOCS (2.4, 2.5, 7.2, 7.3)
@@ -582,12 +651,192 @@ class AutomationToolsPage(QWidget):
         self.refresh_custom_commands()
         self.commands_changed.emit()
 
+    # ==========================================
+    # KNOWLEDGE BASE / FOLDER RAG (Chat With Your Folder)
+    # ==========================================
+
+    def _build_rag_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        idx_row = QHBoxLayout()
+        self.rag_folder_input = QLineEdit()
+        self.rag_folder_input.setPlaceholderText("Choose a folder of PDFs, notes, or code to index locally...")
+        browse_btn = QPushButton("BROWSE")
+        browse_btn.clicked.connect(self._browse_rag_folder)
+        self.rag_index_btn = QPushButton("INDEX FOLDER")
+        self.rag_index_btn.clicked.connect(self._index_rag_folder)
+        clear_btn = QPushButton("CLEAR INDEX")
+        clear_btn.setObjectName("danger_button")
+        clear_btn.clicked.connect(self._clear_rag_index)
+        idx_row.addWidget(self.rag_folder_input, 3)
+        idx_row.addWidget(browse_btn)
+        idx_row.addWidget(self.rag_index_btn)
+        idx_row.addWidget(clear_btn)
+        layout.addLayout(idx_row)
+
+        self.rag_files_list = QListWidget()
+        self.rag_files_list.setMaximumHeight(130)
+        layout.addWidget(self.rag_files_list)
+
+        q_row = QHBoxLayout()
+        self.rag_query_input = QLineEdit()
+        self.rag_query_input.setPlaceholderText("Ask a question across ALL your indexed files (or use /kb <question> in chat)...")
+        self.rag_query_input.returnPressed.connect(self._ask_rag)
+        self.rag_ask_btn = QPushButton("ASK KNOWLEDGE BASE")
+        self.rag_ask_btn.clicked.connect(self._ask_rag)
+        q_row.addWidget(self.rag_query_input, 3)
+        q_row.addWidget(self.rag_ask_btn, 1)
+        layout.addLayout(q_row)
+
+        self.rag_output = QTextEdit()
+        self.rag_output.setReadOnly(True)
+        self.rag_output.setPlaceholderText("Cited answers from your local indexed folder appear here...")
+        layout.addWidget(self.rag_output, 1)
+        return tab
+
+    def _browse_rag_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose Folder to Index")
+        if folder:
+            self.rag_folder_input.setText(folder)
+
+    def _index_rag_folder(self):
+        if self._worker is not None:
+            return
+        folder = self.rag_folder_input.text().strip()
+        if not folder:
+            return
+        self.rag_index_btn.setEnabled(False)
+        self.rag_output.setPlainText(f"[Indexing folder: {folder}...]")
+        self._worker = JarvisWorker(message=folder, task="rag_index")
+        self._worker.task_completed.connect(self._on_rag_indexed)
+        self._worker.error_occurred.connect(lambda err: self.rag_output.setPlainText(f"[Index Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
+
+    def _on_rag_indexed(self, _title, summary):
+        self.rag_output.setPlainText(summary)
+        self.refresh_rag_files()
+
+    def refresh_rag_files(self):
+        self.rag_files_list.clear()
+        for fname, fpath, chunks, ts in list_indexed_files():
+            self.rag_files_list.addItem(f"{fname}  ({chunks} chunks)  —  {fpath}")
+
+    def _clear_rag_index(self):
+        clear_rag_index()
+        self.refresh_rag_files()
+        self.rag_output.setPlainText("Local knowledge base index cleared.")
+
+    def _ask_rag(self):
+        if self._worker is not None:
+            return
+        q = self.rag_query_input.text().strip()
+        if not q:
+            return
+        self.rag_ask_btn.setEnabled(False)
+        self.rag_output.setPlainText(f"[Searching local knowledge base for: {q}...]")
+        self._worker = JarvisWorker(message=q, task="rag_ask", extra={"stream_to_chat": False})
+        self._worker.task_completed.connect(lambda _t, ans: self.rag_output.setPlainText(ans))
+        self._worker.error_occurred.connect(lambda err: self.rag_output.setPlainText(f"[RAG Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
+
+    # ==========================================
+    # SMART CLIPBOARD HISTORY + AI ACTIONS
+    # ==========================================
+
+    def _build_clipboard_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel("Live clipboard history (auto-captured). Select any snippet for one-click AI actions:")
+        info.setObjectName("subtitle")
+        layout.addWidget(info)
+
+        self.clip_list = QListWidget()
+        self.clip_list.setMaximumHeight(160)
+        layout.addWidget(self.clip_list)
+
+        act_row = QHBoxLayout()
+        for label, prompt_prefix in [
+            ("EXPLAIN", "Explain this clearly:"),
+            ("FIX GRAMMAR", "Fix grammar, spelling, and polish this text cleanly:"),
+            ("SUMMARIZE", "Summarize this concisely into key bullet points:"),
+            ("TRANSLATE EN", "Translate this text into natural English:"),
+            ("ANALYZE CODE", "Analyze this code snippet for bugs, purpose, and improvements:"),
+        ]:
+            b = QPushButton(label)
+            b.clicked.connect(lambda checked=False, p=prompt_prefix, lb=label: self._run_clipboard_ai(p, lb))
+            act_row.addWidget(b)
+        copy_back = QPushButton("COPY OUTPUT")
+        copy_back.clicked.connect(lambda: QApplication.clipboard().setText(self.clip_output.toPlainText()))
+        act_row.addWidget(copy_back)
+        layout.addLayout(act_row)
+
+        self.clip_output = QTextEdit()
+        self.clip_output.setReadOnly(True)
+        self.clip_output.setPlaceholderText("AI clipboard action results appear here...")
+        layout.addWidget(self.clip_output, 1)
+        return tab
+
+    def _install_clipboard_watcher(self):
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.dataChanged.connect(self._on_clipboard_changed)
+            initial = (cb.text() or "").strip()
+            if initial:
+                self._record_clip(initial)
+
+    def _on_clipboard_changed(self):
+        cb = QApplication.clipboard()
+        if cb is None:
+            return
+        text = (cb.text() or "").strip()
+        if text:
+            self._record_clip(text)
+
+    def _record_clip(self, text: str):
+        if self._clip_history and self._clip_history[0] == text:
+            return
+        if text in self._clip_history:
+            self._clip_history.remove(text)
+        self._clip_history.insert(0, text)
+        self._clip_history = self._clip_history[:25]
+        self.clip_list.clear()
+        for snippet in self._clip_history:
+            preview = " ".join(snippet.split())[:110]
+            item = QListWidgetItem(preview)
+            item.setData(Qt.ItemDataRole.UserRole, snippet)
+            self.clip_list.addItem(item)
+
+    def _run_clipboard_ai(self, instruction: str, title: str):
+        if self._worker is not None:
+            return
+        item = self.clip_list.currentItem()
+        text = item.data(Qt.ItemDataRole.UserRole) if item else (QApplication.clipboard().text() or "").strip()
+        if not text:
+            self.clip_output.setPlainText("Clipboard is empty. Copy some text first.")
+            return
+        self.clip_output.setPlainText(f"[Running AI Clipboard Action: {title}...]")
+        self._worker = JarvisWorker(
+            message=f"{instruction}\n\n{text[:10000]}",
+            task="assistant_prompt",
+            extra={"title": f"Clipboard: {title}"},
+        )
+        self._worker.task_completed.connect(lambda _t, body: self.clip_output.setPlainText(body))
+        self._worker.error_occurred.connect(lambda err: self.clip_output.setPlainText(f"[Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
+
     def _on_worker_done(self):
         w = self._worker
         self._worker = None
         self.doc_ai_btn.setEnabled(True)
         self.web_btn.setEnabled(True)
         self.yt_btn.setEnabled(True)
+        self.rag_index_btn.setEnabled(True)
+        self.rag_ask_btn.setEnabled(True)
         if w:
             w.deleteLater()
 

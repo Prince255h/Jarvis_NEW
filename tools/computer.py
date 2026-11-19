@@ -1,6 +1,7 @@
 """Desktop Automation Engine for JARVIS (2.1 - 2.9)."""
 
 import os
+import re
 import sys
 import ctypes
 import shutil
@@ -43,6 +44,46 @@ APP_ALIASES = {
 }
 
 
+def find_chrome_executable() -> str | None:
+    """Locate Google Chrome executable on Windows (or PATH) so JARVIS always prefers Chrome."""
+    candidates = [
+        shutil.which("chrome"),
+        shutil.which("google-chrome"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            for root_hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    with winreg.OpenKey(root_hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as k:
+                        val, _ = winreg.QueryValueEx(k, None)
+                        if val and os.path.isfile(val):
+                            return val
+                except OSError:
+                    continue
+        except Exception:
+            pass
+    return None
+
+
+def open_url_in_chrome(url: str) -> str:
+    """Always open URL in Google Chrome (falling back to default browser only if Chrome isn't installed)."""
+    chrome_exe = find_chrome_executable()
+    if chrome_exe:
+        subprocess.Popen([chrome_exe, url], shell=False)
+        return "Google Chrome"
+    webbrowser.open(url)
+    return "default browser"
+
+
 def open_application(app_name: str) -> str:
     """Safely launch a known application or executable path."""
     raw = (app_name or "").strip()
@@ -50,6 +91,12 @@ def open_application(app_name: str) -> str:
         raise ValueError("Please specify an application name.")
 
     key = raw.lower()
+    if key in ("chrome", "google chrome"):
+        chrome_exe = find_chrome_executable()
+        if chrome_exe:
+            subprocess.Popen([chrome_exe], shell=False)
+            return f"Launched Google Chrome ({chrome_exe})"
+
     if key in APP_ALIASES:
         target = APP_ALIASES[key][0]
         if target.endswith(":"):
@@ -108,17 +155,28 @@ def open_website(url_or_name: str) -> str:
     if key in SITE_SHORTCUTS:
         url = SITE_SHORTCUTS[key]
     else:
-        if not raw.startswith(("http://", "https://")):
-            url = "https://" + raw
-        else:
-            url = raw
+        if any(ch.isspace() for ch in raw):
+            raise ValueError(f"Invalid website URL (contains whitespace): {raw}")
+
+        # Reject explicit non-HTTP(S) schemes like javascript:, file:, data:, vbscript:
+        scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*):", raw)
+        if scheme_match and scheme_match.group(1).lower() not in ("http", "https"):
+            raise ValueError(f"Blocked unsupported URL scheme: {scheme_match.group(1)}:")
+
+        url = raw if raw.startswith(("http://", "https://")) else "https://" + raw
 
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme not in ("http", "https")
+        or not host
+        or (host != "localhost" and "." not in host)
+        or not re.fullmatch(r"[a-z0-9.-]+", host)
+    ):
         raise ValueError(f"Invalid website URL: {url}")
 
-    webbrowser.open(url)
-    return f"Opened website: {url}"
+    browser_used = open_url_in_chrome(url)
+    return f"Opened in {browser_used}: {url}"
 
 
 # ==========================================
@@ -130,8 +188,8 @@ def search_google(query: str) -> str:
     if not query:
         raise ValueError("Search query cannot be empty.")
     url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
-    webbrowser.open(url)
-    return f"Opened Google search for: {query}"
+    browser_used = open_url_in_chrome(url)
+    return f"Opened Google search in {browser_used} for: {query}"
 
 
 def search_youtube(query: str) -> str:
@@ -139,8 +197,8 @@ def search_youtube(query: str) -> str:
     if not query:
         raise ValueError("YouTube query cannot be empty.")
     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
-    webbrowser.open(url)
-    return f"Opened YouTube search for: {query}"
+    browser_used = open_url_in_chrome(url)
+    return f"Opened YouTube search in {browser_used} for: {query}"
 
 
 # ==========================================
@@ -292,14 +350,19 @@ def capture_screenshot_qapp(qapp) -> Path:
 # ==========================================
 
 DANGEROUS_PATTERNS = (
-    "rm -rf", "format ", "del /s", "rd /s", "rmdir /s", "shutdown",
-    "reboot", "diskpart", "reg delete", "bcdedit", "cipher /w",
+    re.compile(r"\brm\s+[^\n]*(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-r\s+-f|-f\s+-r|--recursive)", re.IGNORECASE),
+    re.compile(r"\bremove-item\b[^\n]*(-recurse|-force)", re.IGNORECASE),
+    re.compile(r"\b(?:del|erase)\b[^\n]*/[a-z]*s", re.IGNORECASE),
+    re.compile(r"\b(?:rd|rmdir)\b[^\n]*/[a-z]*s", re.IGNORECASE),
+    re.compile(r"\b(?:stop-computer|restart-computer|clear-disk|format-volume)\b", re.IGNORECASE),
+    re.compile(r"\b(?:format|shutdown|reboot|diskpart|bcdedit)\b", re.IGNORECASE),
+    re.compile(r"\breg\s+delete\b|\bcipher\s+/w\b", re.IGNORECASE),
 )
 
 
 def is_potentially_dangerous_command(command: str) -> bool:
-    lower = (command or "").lower()
-    return any(pat in lower for pat in DANGEROUS_PATTERNS)
+    text = (command or "").strip()
+    return any(pat.search(text) for pat in DANGEROUS_PATTERNS)
 
 
 def run_approved_command(command: str, timeout: int = 30, cwd=None) -> dict:

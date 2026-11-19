@@ -3,8 +3,12 @@
 import ast
 import re
 import socket
+import ssl
 import subprocess
+import sys
+import tempfile
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 import psutil
 import requests
@@ -20,6 +24,37 @@ def check_python_syntax(code: str) -> str:
         return "Python Syntax Check: OK (no syntax errors detected)."
     except SyntaxError as err:
         return f"Python SyntaxError on line {err.lineno}, column {err.offset}: {err.msg}"
+
+
+def run_python_snippet(code: str, timeout: int = 10) -> dict:
+    """Execute a Python snippet inside a temporary isolated subprocess with timeout."""
+    code = (code or "").strip()
+    if not code:
+        raise ValueError("No Python code provided to execute.")
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
+            tf.write(code)
+            tmp_path = tf.name
+
+        proc = subprocess.run(
+            [sys.executable, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return {
+            "returncode": proc.returncode,
+            "stdout": proc.stdout.strip(),
+            "stderr": proc.stderr.strip(),
+        }
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ==========================================
@@ -140,7 +175,7 @@ RECOMMENDED_SECURITY_HEADERS = {
 }
 
 
-def analyze_http_headers_dict(headers: dict, status_line: str = "") -> str:
+def analyze_http_headers_dict(headers: dict, status_line: str = "", set_cookies=None) -> str:
     lower_headers = {k.lower(): v for k, v in headers.items()}
     lines = ["=== HTTP SECURITY HEADER AUDIT ==="]
     if status_line:
@@ -162,14 +197,19 @@ def analyze_http_headers_dict(headers: dict, status_line: str = "") -> str:
         warnings.append(f"  [WARN] X-Powered-By leaks tech stack: {lower_headers['x-powered-by']}")
     if lower_headers.get("access-control-allow-origin") == "*":
         warnings.append("  [WARN] Wildcard CORS (Access-Control-Allow-Origin: *) detected.")
-    if "set-cookie" in lower_headers:
-        cookie = lower_headers["set-cookie"].lower()
+
+    cookies_to_check = list(set_cookies) if set_cookies else (
+        [lower_headers["set-cookie"]] if "set-cookie" in lower_headers else []
+    )
+    for idx, raw_cookie in enumerate(cookies_to_check, 1):
+        cookie = raw_cookie.lower()
+        cookie_name = raw_cookie.split("=", 1)[0].strip() or f"#{idx}"
         if "httponly" not in cookie:
-            warnings.append("  [WARN] Set-Cookie missing HttpOnly flag.")
+            warnings.append(f"  [WARN] Set-Cookie ({cookie_name}) missing HttpOnly flag.")
         if "secure" not in cookie:
-            warnings.append("  [WARN] Set-Cookie missing Secure flag.")
+            warnings.append(f"  [WARN] Set-Cookie ({cookie_name}) missing Secure flag.")
         if "samesite" not in cookie:
-            warnings.append("  [WARN] Set-Cookie missing SameSite attribute.")
+            warnings.append(f"  [WARN] Set-Cookie ({cookie_name}) missing SameSite attribute.")
 
     lines.append("\nPresent Security Headers:")
     lines.extend(present or ["  (none)"])
@@ -188,13 +228,17 @@ def analyze_raw_http(raw_text: str) -> str:
         return "Empty HTTP input."
     status_line = lines[0]
     headers = {}
+    set_cookies = []
     for ln in lines[1:]:
         if not ln.strip():
             break
         if ":" in ln:
             k, v = ln.split(":", 1)
-            headers[k.strip()] = v.strip()
-    return analyze_http_headers_dict(headers, status_line=status_line)
+            key, val = k.strip(), v.strip()
+            headers[key] = val
+            if key.lower() == "set-cookie":
+                set_cookies.append(val)
+    return analyze_http_headers_dict(headers, status_line=status_line, set_cookies=set_cookies)
 
 
 def fetch_and_analyze_url_headers(url: str) -> str:
@@ -202,9 +246,16 @@ def fetch_and_analyze_url_headers(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     resp = requests.get(url, timeout=10, allow_redirects=True)
+    set_cookies = []
+    try:
+        if hasattr(resp.raw, "headers") and hasattr(resp.raw.headers, "getlist"):
+            set_cookies = resp.raw.headers.getlist("Set-Cookie")
+    except Exception:
+        pass
     header_report = analyze_http_headers_dict(
         dict(resp.headers),
         status_line=f"HTTP {resp.status_code} ({resp.url})",
+        set_cookies=set_cookies or None,
     )
     return header_report
 
@@ -330,4 +381,109 @@ SECURITY_CHECKLISTS = {
         "[ ] Use constant-time comparisons for tokens/hashes and generic login error messages",
     ],
 }
+
+
+# ==========================================
+# SSL CERTIFICATE & DNS INSPECTOR
+# ==========================================
+
+def _clean_hostname(target: str) -> str:
+    raw = (target or "").strip()
+    raw = re.sub(r"^https?://", "", raw, flags=re.IGNORECASE)
+    raw = raw.split("/", 1)[0].split(":", 1)[0].strip().lower()
+    if not raw or not re.fullmatch(r"[a-z0-9.-]+", raw):
+        raise ValueError(f"Invalid domain/hostname: {target}")
+    return raw
+
+
+def inspect_ssl_certificate(domain: str, port: int = 443) -> str:
+    """Inspect TLS/SSL certificate issuer, subject, SANs, expiry, and negotiated cipher."""
+    host = _clean_hostname(domain)
+    ctx = ssl.create_default_context()
+    with socket.create_connection((host, port), timeout=8) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            cert = ssock.getpeercert()
+            tls_version = ssock.version()
+            cipher = ssock.cipher()
+
+    subject = dict(x[0] for x in cert.get("subject", []))
+    issuer = dict(x[0] for x in cert.get("issuer", []))
+    not_before = cert.get("notBefore", "Unknown")
+    not_after = cert.get("notAfter", "Unknown")
+    days_left = "Unknown"
+    try:
+        exp_dt = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days_left = f"{(exp_dt - datetime.now(timezone.utc)).days} days"
+    except Exception:
+        pass
+
+    sans = [val for typ, val in cert.get("subjectAltName", []) if typ == "DNS"][:10]
+    lines = [
+        f"=== TLS / SSL CERTIFICATE: {host}:{port} ===",
+        f"  Subject CN  : {subject.get('commonName', 'N/A')}",
+        f"  Issuer      : {issuer.get('organizationName', 'N/A')} ({issuer.get('commonName', 'N/A')})",
+        f"  TLS Version : {tls_version}",
+        f"  Cipher      : {cipher[0] if cipher else 'N/A'} ({cipher[2] if cipher else '?'} bits)",
+        f"  Valid From  : {not_before}",
+        f"  Valid Until : {not_after}  ({days_left} remaining)",
+        f"  SAN Domains : {', '.join(sans) if sans else 'None'}",
+    ]
+    return "\n".join(lines)
+
+
+def inspect_dns_records(domain: str) -> str:
+    """Query A, AAAA, MX, NS, and TXT (SPF/DMARC) records via DNS-over-HTTPS JSON API."""
+    host = _clean_hostname(domain)
+    lines = [f"=== DNS RECORDS: {host} ==="]
+
+    def doh_query(qname: str, qtype: str) -> list[str]:
+        resp = requests.get(
+            "https://cloudflare-dns.com/dns-query",
+            params={"name": qname, "type": qtype},
+            headers={"Accept": "application/dns-json", "User-Agent": "JARVIS-DNS/1.0"},
+            timeout=8,
+        )
+        if not resp.ok:
+            return []
+        data = resp.json()
+        return [ans.get("data", "") for ans in data.get("Answer", []) if ans.get("data")]
+
+    for rtype in ("A", "AAAA", "MX", "NS", "TXT"):
+        try:
+            vals = doh_query(host, rtype)
+            if vals:
+                lines.append(f"  [{rtype}]")
+                for v in vals[:8]:
+                    lines.append(f"    - {v}")
+            else:
+                lines.append(f"  [{rtype}] (none)")
+        except Exception as err:
+            lines.append(f"  [{rtype}] Error: {err}")
+
+    # DMARC check
+    try:
+        dmarc = doh_query(f"_dmarc.{host}", "TXT")
+        lines.append("  [DMARC]")
+        if dmarc:
+            for v in dmarc[:3]:
+                lines.append(f"    - {v}")
+        else:
+            lines.append("    - [WARN] No DMARC record found.")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+def full_domain_security_report(domain: str) -> str:
+    parts = []
+    try:
+        parts.append(inspect_ssl_certificate(domain))
+    except Exception as err:
+        parts.append(f"=== TLS / SSL CERTIFICATE ===\n  Unavailable: {err}")
+    try:
+        parts.append(inspect_dns_records(domain))
+    except Exception as err:
+        parts.append(f"=== DNS RECORDS ===\n  Unavailable: {err}")
+    return "\n\n".join(parts)
 

@@ -90,20 +90,28 @@ class CodingAssistantPage(QWidget):
         layout.addWidget(splitter, 1)
 
         bottom = QHBoxLayout()
-        syntax_btn = QPushButton("LOCAL PYTHON SYNTAX CHECK")
+        self.run_py_btn = QPushButton("▶ RUN PYTHON")
+        self.run_py_btn.setObjectName("primary_cta")
+        self.run_py_btn.clicked.connect(self._run_python_snippet)
+        self.auto_debug_btn = QPushButton("AUTO-DEBUG ERROR")
+        self.auto_debug_btn.clicked.connect(self._auto_debug_last_run)
+        syntax_btn = QPushButton("SYNTAX CHECK")
         syntax_btn.clicked.connect(self._quick_syntax_check)
-        sec_btn = QPushButton("LOCAL SECURITY PRE-SCAN")
+        sec_btn = QPushButton("SECURITY SCAN")
         sec_btn.clicked.connect(self._quick_security_scan)
         copy_btn = QPushButton("COPY OUTPUT")
         copy_btn.clicked.connect(self._copy_output)
         clear_btn = QPushButton("CLEAR")
         clear_btn.clicked.connect(self._clear)
+        bottom.addWidget(self.run_py_btn)
+        bottom.addWidget(self.auto_debug_btn)
         bottom.addWidget(syntax_btn)
         bottom.addWidget(sec_btn)
         bottom.addStretch()
         bottom.addWidget(copy_btn)
         bottom.addWidget(clear_btn)
         layout.addLayout(bottom)
+        self._last_run_output = ""
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -123,6 +131,53 @@ class CodingAssistantPage(QWidget):
 
     def _quick_security_scan(self):
         self.output_view.setPlainText(scan_code_security_local(self.input_editor.toPlainText()))
+
+    def _run_python_snippet(self):
+        if self._worker is not None:
+            return
+        code = self.input_editor.toPlainText().strip()
+        if not code:
+            self.output_view.setPlainText("Paste Python code in the editor above first.")
+            return
+        self.run_btn.setEnabled(False)
+        self.run_py_btn.setEnabled(False)
+        self.output_view.setPlainText("[Executing Python snippet in isolated subprocess (10s timeout)...]")
+        self._worker = JarvisWorker(message=code, task="python_run")
+        self._worker.task_completed.connect(self._on_python_run_done)
+        self._worker.error_occurred.connect(lambda err: self.output_view.setPlainText(f"[RUNNER ERROR] {err}"))
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _on_python_run_done(self, _title, body):
+        self._last_run_output = body
+        self.output_view.setPlainText(body)
+
+    def _auto_debug_last_run(self):
+        if self._worker is not None:
+            return
+        code = self.input_editor.toPlainText().strip()
+        err_out = self._last_run_output or self.output_view.toPlainText().strip()
+        if not code:
+            self.output_view.setPlainText("No code to debug.")
+            return
+        self.run_btn.setEnabled(False)
+        self.run_py_btn.setEnabled(False)
+        self.output_view.setPlainText("[JARVIS Debugging code + execution output...]")
+        prompt = (
+            "Debug this Python code using the execution output / traceback below. "
+            "Explain the root cause concisely and provide the fixed code:\n\n"
+            f"```python\n{code}\n```\n\n--- EXECUTION OUTPUT ---\n{err_out}"
+        )
+        self._worker = JarvisWorker(
+            message=prompt,
+            task="assistant_prompt",
+            personality_override="CODER",
+            extra={"title": "Auto-Debug"},
+        )
+        self._worker.task_completed.connect(lambda _t, body: self.output_view.setPlainText(body))
+        self._worker.error_occurred.connect(lambda err: self.output_view.setPlainText(f"[ERROR] {err}"))
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
 
     def _run_assistant(self):
         if self._worker is not None:
@@ -164,6 +219,7 @@ class CodingAssistantPage(QWidget):
         w = self._worker
         self._worker = None
         self.run_btn.setEnabled(True)
+        self.run_py_btn.setEnabled(True)
         if w:
             w.deleteLater()
 

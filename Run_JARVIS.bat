@@ -47,7 +47,7 @@ set "NEED_INSTALL=0"
 if /I "%~1"=="--reinstall" set "NEED_INSTALL=1"
 
 if "%NEED_INSTALL%"=="0" (
-    "%VENV_PY%" -c "import PySide6, google.genai, groq, dotenv, requests, psutil, edge_tts, pygame" >nul 2>&1
+    "%VENV_PY%" -c "import PySide6, google.genai, groq, dotenv, requests, psutil, edge_tts, pygame, cryptography, numpy" >nul 2>&1
     if errorlevel 1 set "NEED_INSTALL=1"
 )
 

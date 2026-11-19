@@ -14,7 +14,12 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QFileDialog,
     QApplication,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QSpinBox,
 )
+from PySide6.QtCore import Qt
 
 from tools.cybersec import (
     OWASP_TOP_10,
@@ -24,6 +29,8 @@ from tools.cybersec import (
     fetch_and_analyze_url_headers,
     get_local_network_info,
 )
+from tools.vault import LocalSecretVault, generate_strong_password
+from tools.exporter import export_markdown, export_text_to_pdf
 from interface.worker import JarvisWorker
 
 
@@ -33,13 +40,14 @@ class CybersecurityPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker = None
+        self._vault = LocalSecretVault()
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
         title = QLabel("CYBERSECURITY & DEFENSIVE LAB CENTER")
         title.setObjectName("page_title")
-        subtitle = QLabel("Educational, defensive security analysis, hardening, and legal authorized-lab assistance.")
+        subtitle = QLabel("Educational, defensive security analysis, hardening, encrypted vault, and authorized-lab assistance.")
         subtitle.setObjectName("subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -48,9 +56,11 @@ class CybersecurityPage(QWidget):
         self.tabs.addTab(self._build_vuln_owasp_tab(), "Vulns & OWASP")
         self.tabs.addTab(self._build_log_tab(), "Log Analyzer")
         self.tabs.addTab(self._build_http_tab(), "HTTP Analyzer")
+        self.tabs.addTab(self._build_dns_ssl_tab(), "DNS & SSL")
         self.tabs.addTab(self._build_network_tab(), "Local Network")
         self.tabs.addTab(self._build_checklist_tab(), "Checklists")
         self.tabs.addTab(self._build_bounty_lab_tab(), "Bug Bounty & Labs")
+        self.tabs.addTab(self._build_vault_tab(), "Secrets Vault")
         layout.addWidget(self.tabs, 1)
 
     def _run_ai(self, target_output: QTextEdit, prompt: str, title: str, prefix: str = ""):
@@ -222,14 +232,17 @@ class CybersecurityPage(QWidget):
         return tab
 
     def _audit_url_headers(self):
+        if self._worker is not None:
+            return
         url = self.http_url_input.text().strip()
         if not url:
             return
-        try:
-            report = fetch_and_analyze_url_headers(url)
-            self.http_output.setPlainText(report)
-        except Exception as err:
-            self.http_output.setPlainText(f"[HTTP Audit Error] {err}")
+        self.http_output.setPlainText(f"[Auditing HTTP security headers for {url}...]")
+        self._worker = JarvisWorker(message=url, task="http_audit")
+        self._worker.task_completed.connect(lambda _t, report: self.http_output.setPlainText(report))
+        self._worker.error_occurred.connect(lambda err: self.http_output.setPlainText(f"[HTTP Audit Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
 
     def _audit_raw_http_local(self):
         self.http_output.setPlainText(analyze_raw_http(self.http_raw_input.toPlainText()))
@@ -338,9 +351,15 @@ class CybersecurityPage(QWidget):
         lab_btn.clicked.connect(self._legal_lab_assist)
         copy_btn = QPushButton("COPY OUTPUT")
         copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self.bb_output.toPlainText()))
+        exp_md_btn = QPushButton("EXPORT .MD")
+        exp_md_btn.clicked.connect(lambda: self._export_bounty("md"))
+        exp_pdf_btn = QPushButton("EXPORT .PDF")
+        exp_pdf_btn.clicked.connect(lambda: self._export_bounty("pdf"))
         btns.addWidget(draft_btn)
         btns.addWidget(lab_btn)
         btns.addStretch()
+        btns.addWidget(exp_md_btn)
+        btns.addWidget(exp_pdf_btn)
         btns.addWidget(copy_btn)
 
         self.bb_output = QTextEdit()
@@ -379,7 +398,210 @@ class CybersecurityPage(QWidget):
         )
         self._run_ai(self.bb_output, prompt, "Legal Lab Assistance")
 
+    def _export_bounty(self, fmt: str):
+        text = self.bb_output.toPlainText().strip()
+        if not text:
+            QMessageBox.information(self, "Empty Report", "Draft a report first before exporting.")
+            return
+        if fmt == "pdf":
+            path, _ = QFileDialog.getSaveFileName(self, "Export Report to PDF", "security_report.pdf", "PDF (*.pdf)")
+            if path:
+                export_text_to_pdf(text, path, title="J.A.R.V.I.S Security Report")
+                QMessageBox.information(self, "Exported", f"PDF saved to:\n{path}")
+        else:
+            path, _ = QFileDialog.getSaveFileName(self, "Export Report to Markdown", "security_report.md", "Markdown (*.md)")
+            if path:
+                export_markdown(text, path)
+                QMessageBox.information(self, "Exported", f"Markdown saved to:\n{path}")
+
+    # ==========================================
+    # DNS & SSL CERTIFICATE INSPECTOR
+    # ==========================================
+
+    def _build_dns_ssl_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        row = QHBoxLayout()
+        self.dns_domain_input = QLineEdit()
+        self.dns_domain_input.setPlaceholderText("Enter authorized domain (e.g. example.com, github.com)...")
+        self.dns_domain_input.returnPressed.connect(self._run_dns_ssl_audit)
+        scan_btn = QPushButton("INSPECT TLS/SSL + DNS")
+        scan_btn.clicked.connect(self._run_dns_ssl_audit)
+        row.addWidget(self.dns_domain_input, 3)
+        row.addWidget(scan_btn, 1)
+
+        self.dns_output = QTextEdit()
+        self.dns_output.setReadOnly(True)
+        self.dns_output.setPlaceholderText("SSL certificate details (issuer, SANs, expiry, cipher) and DNS records (A, AAAA, MX, NS, TXT, DMARC) appear here...")
+
+        layout.addLayout(row)
+        layout.addWidget(self.dns_output, 1)
+        return tab
+
+    def _run_dns_ssl_audit(self):
+        if self._worker is not None:
+            return
+        domain = self.dns_domain_input.text().strip()
+        if not domain:
+            return
+        self.dns_output.setPlainText(f"[Inspecting TLS certificate & DNS records for {domain}...]")
+        self._worker = JarvisWorker(message=domain, task="dns_ssl_audit")
+        self._worker.task_completed.connect(lambda _t, rep: self.dns_output.setPlainText(rep))
+        self._worker.error_occurred.connect(lambda err: self.dns_output.setPlainText(f"[DNS/SSL Error] {err}"))
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
+
+    # ==========================================
+    # ENCRYPTED LOCAL SECRETS / PASSWORD VAULT
+    # ==========================================
+
+    def _build_vault_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # Unlock / Lock row
+        auth_row = QHBoxLayout()
+        self.vault_master_input = QLineEdit()
+        self.vault_master_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.vault_master_input.setPlaceholderText(
+            "Enter Master Password to unlock (or create new encrypted vault)..."
+        )
+        self.vault_master_input.returnPressed.connect(self._unlock_vault)
+
+        unlock_btn = QPushButton("UNLOCK / INIT")
+        unlock_btn.clicked.connect(self._unlock_vault)
+        lock_btn = QPushButton("LOCK VAULT")
+        lock_btn.clicked.connect(self._lock_vault)
+        self.vault_status_lbl = QLabel("LOCKED")
+        self.vault_status_lbl.setObjectName("status_pill")
+
+        auth_row.addWidget(self.vault_master_input, 3)
+        auth_row.addWidget(unlock_btn)
+        auth_row.addWidget(lock_btn)
+        auth_row.addWidget(self.vault_status_lbl)
+        layout.addLayout(auth_row)
+
+        # Password generator row
+        gen_row = QHBoxLayout()
+        self.pw_len_spin = QSpinBox()
+        self.pw_len_spin.setRange(12, 64)
+        self.pw_len_spin.setValue(20)
+        self.pw_len_spin.setSuffix(" chars")
+        gen_btn = QPushButton("GENERATE STRONG PASSWORD")
+        gen_btn.clicked.connect(self._generate_password)
+        gen_row.addWidget(QLabel("Password Generator:"))
+        gen_row.addWidget(self.pw_len_spin)
+        gen_row.addWidget(gen_btn)
+        gen_row.addStretch()
+        layout.addLayout(gen_row)
+
+        # Add entry form
+        add_row = QHBoxLayout()
+        self.v_service = QLineEdit()
+        self.v_service.setPlaceholderText("Service (e.g. GitHub, AWS)")
+        self.v_user = QLineEdit()
+        self.v_user.setPlaceholderText("Username / Key Name")
+        self.v_secret = QLineEdit()
+        self.v_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.v_secret.setPlaceholderText("Password / Secret Token")
+        add_btn = QPushButton("ENCRYPT & SAVE")
+        add_btn.clicked.connect(self._add_vault_entry)
+        add_row.addWidget(self.v_service, 2)
+        add_row.addWidget(self.v_user, 2)
+        add_row.addWidget(self.v_secret, 3)
+        add_row.addWidget(add_btn, 1)
+        layout.addLayout(add_row)
+
+        # Vault entries list
+        self.vault_list = QListWidget()
+        layout.addWidget(self.vault_list, 1)
+
+        actions = QHBoxLayout()
+        copy_sec_btn = QPushButton("COPY SECRET")
+        copy_sec_btn.clicked.connect(self._copy_vault_secret)
+        reveal_btn = QPushButton("REVEAL SELECTED")
+        reveal_btn.clicked.connect(self._reveal_vault_secret)
+        del_btn = QPushButton("DELETE ENTRY")
+        del_btn.setObjectName("danger_button")
+        del_btn.clicked.connect(self._delete_vault_entry)
+        actions.addWidget(copy_sec_btn)
+        actions.addWidget(reveal_btn)
+        actions.addStretch()
+        actions.addWidget(del_btn)
+        layout.addLayout(actions)
+        return tab
+
+    def _unlock_vault(self):
+        pw = self.vault_master_input.text()
+        try:
+            msg = self._vault.setup_or_unlock(pw)
+            self.vault_master_input.clear()
+            self.vault_status_lbl.setText("UNLOCKED")
+            self._refresh_vault()
+            QMessageBox.information(self, "Secrets Vault", msg)
+        except Exception as err:
+            QMessageBox.warning(self, "Vault Error", str(err))
+
+    def _lock_vault(self):
+        self._vault.lock()
+        self.vault_list.clear()
+        self.vault_status_lbl.setText("LOCKED")
+
+    def _generate_password(self):
+        pw = generate_strong_password(self.pw_len_spin.value())
+        self.v_secret.setText(pw)
+        QApplication.clipboard().setText(pw)
+        QMessageBox.information(self, "Password Generated", f"Generated & copied to clipboard:\n{pw}")
+
+    def _add_vault_entry(self):
+        try:
+            self._vault.add_entry(self.v_service.text(), self.v_user.text(), self.v_secret.text())
+            self.v_service.clear()
+            self.v_user.clear()
+            self.v_secret.clear()
+            self._refresh_vault()
+        except Exception as err:
+            QMessageBox.warning(self, "Vault Error", str(err))
+
+    def _refresh_vault(self):
+        self.vault_list.clear()
+        if not self._vault.is_unlocked:
+            return
+        for entry in self._vault.list_entries():
+            masked = "•" * min(16, len(entry["secret"]))
+            item = QListWidgetItem(f"{entry['service']}  |  {entry['username'] or '(no user)'}  |  {masked}")
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            self.vault_list.addItem(item)
+
+    def _copy_vault_secret(self):
+        item = self.vault_list.currentItem()
+        if not item:
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        QApplication.clipboard().setText(entry["secret"])
+
+    def _reveal_vault_secret(self):
+        item = self.vault_list.currentItem()
+        if not item:
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        QMessageBox.information(
+            self,
+            f"Secret: {entry['service']}",
+            f"Username: {entry['username']}\nSecret: {entry['secret']}",
+        )
+
+    def _delete_vault_entry(self):
+        item = self.vault_list.currentItem()
+        if not item:
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        self._vault.delete_entry(entry["id"])
+        self._refresh_vault()
+
     def shutdown(self):
+        self._vault.lock()
         if self._worker and self._worker.isRunning():
             self._worker.quit()
             self._worker.wait(1000)

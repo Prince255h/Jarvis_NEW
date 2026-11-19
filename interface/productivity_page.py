@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QFrame,
+    QCheckBox,
+    QGroupBox,
 )
 from PySide6.QtCore import Qt, QTimer, QDate, QDateTime, Signal
 
@@ -43,6 +45,16 @@ from core.productivity import (
     get_study_progress,
     build_daily_summary_text,
 )
+from core.scheduler import (
+    ACTION_TYPES,
+    SCHEDULE_TYPES,
+    save_scheduled_task,
+    list_scheduled_tasks,
+    set_scheduled_task_enabled,
+    delete_scheduled_task,
+    list_scheduled_logs,
+)
+from tools.computer import is_potentially_dangerous_command
 from interface.worker import JarvisWorker
 
 
@@ -50,11 +62,13 @@ class ProductivityPage(QWidget):
     """Unified Personal Productivity Workspace (Tasks, Reminders, Notes, Calendar, Pomodoro, Daily Summary)."""
 
     announce_signal = Signal(str)
+    run_scheduled_now_signal = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ai_worker = None
         self._current_note_id = None
+        self._editing_sched_id = None
 
         # Pomodoro state
         self._pomo_running = False
@@ -73,6 +87,7 @@ class ProductivityPage(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_tasks_tab(), "Tasks & To-Do")
+        self.tabs.addTab(self._build_scheduler_tab(), "Scheduled Tasks")
         self.tabs.addTab(self._build_reminders_tab(), "Reminders & Alarms")
         self.tabs.addTab(self._build_notes_tab(), "Notes")
         self.tabs.addTab(self._build_calendar_tab(), "Calendar")
@@ -84,6 +99,7 @@ class ProductivityPage(QWidget):
 
     def refresh_all(self):
         self.refresh_tasks()
+        self.refresh_scheduled_tasks()
         self.refresh_reminders()
         self.refresh_notes()
         self.refresh_calendar_events()
@@ -188,6 +204,242 @@ class ProductivityPage(QWidget):
         delete_task(tid)
         self.refresh_tasks()
         self.refresh_daily_summary()
+
+    # ==========================================
+    # CUSTOM SCHEDULED TASK AUTOMATION ENGINE
+    # ==========================================
+
+    def _build_scheduler_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(8)
+
+        form_box = QGroupBox("CREATE / EDIT CUSTOM SCHEDULED TASK (RUNS AUTOMATICALLY AT SCHEDULED TIME)")
+        fb = QVBoxLayout(form_box)
+        fb.setSpacing(6)
+
+        row1 = QHBoxLayout()
+        self.sched_name_input = QLineEdit()
+        self.sched_name_input.setPlaceholderText("Task Name (e.g. Morning AI Briefing, Auto-Organize Downloads)")
+        self.sched_action_combo = QComboBox()
+        for key, meta in ACTION_TYPES.items():
+            self.sched_action_combo.addItem(meta["label"], key)
+        self.sched_action_combo.currentIndexChanged.connect(self._update_sched_placeholder)
+        row1.addWidget(self.sched_name_input, 2)
+        row1.addWidget(self.sched_action_combo, 2)
+        fb.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self.sched_payload_input = QLineEdit()
+        row2.addWidget(self.sched_payload_input, 1)
+        fb.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        self.sched_type_combo = QComboBox()
+        for key, label in SCHEDULE_TYPES.items():
+            self.sched_type_combo.addItem(label, key)
+        self.sched_type_combo.currentIndexChanged.connect(self._on_sched_type_changed)
+
+        self.sched_interval_spin = QSpinBox()
+        self.sched_interval_spin.setRange(1, 1440)
+        self.sched_interval_spin.setValue(30)
+        self.sched_interval_spin.setSuffix(" min")
+        self.sched_interval_spin.setVisible(False)
+
+        self.sched_dt_edit = QDateTimeEdit(QDateTime.currentDateTime().addSecs(300))
+        self.sched_dt_edit.setCalendarPopup(True)
+        self.sched_dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+
+        self.sched_speak_chk = QCheckBox("Speak result")
+        self.sched_speak_chk.setChecked(True)
+
+        self.sched_save_btn = QPushButton("SCHEDULE TASK")
+        self.sched_save_btn.setObjectName("primary_cta")
+        self.sched_save_btn.clicked.connect(self._save_scheduled_task)
+
+        new_btn = QPushButton("RESET FORM")
+        new_btn.clicked.connect(self._reset_scheduler_form)
+
+        row3.addWidget(QLabel("Repeat:"))
+        row3.addWidget(self.sched_type_combo)
+        row3.addWidget(self.sched_interval_spin)
+        row3.addWidget(QLabel("Run At:"))
+        row3.addWidget(self.sched_dt_edit)
+        row3.addWidget(self.sched_speak_chk)
+        row3.addWidget(self.sched_save_btn)
+        row3.addWidget(new_btn)
+        fb.addLayout(row3)
+
+        layout.addWidget(form_box)
+
+        # Scheduled task list + controls
+        self.sched_list = QListWidget()
+        self.sched_list.itemClicked.connect(self._preview_sched_output)
+        self.sched_list.itemDoubleClicked.connect(self._edit_selected_sched)
+        layout.addWidget(self.sched_list, 2)
+
+        ctrl_row = QHBoxLayout()
+        run_now_btn = QPushButton("▶ RUN NOW")
+        run_now_btn.clicked.connect(self._run_selected_sched_now)
+        toggle_btn = QPushButton("ENABLE / DISABLE")
+        toggle_btn.clicked.connect(self._toggle_selected_sched)
+        edit_btn = QPushButton("EDIT SELECTED")
+        edit_btn.clicked.connect(self._edit_selected_sched)
+        refresh_btn = QPushButton("REFRESH")
+        refresh_btn.clicked.connect(self.refresh_scheduled_tasks)
+        del_btn = QPushButton("DELETE")
+        del_btn.setObjectName("danger_button")
+        del_btn.clicked.connect(self._delete_selected_sched)
+        ctrl_row.addWidget(run_now_btn)
+        ctrl_row.addWidget(toggle_btn)
+        ctrl_row.addWidget(edit_btn)
+        ctrl_row.addWidget(refresh_btn)
+        ctrl_row.addStretch()
+        ctrl_row.addWidget(del_btn)
+        layout.addLayout(ctrl_row)
+
+        self.sched_log_view = QTextEdit()
+        self.sched_log_view.setReadOnly(True)
+        self.sched_log_view.setMaximumHeight(145)
+        self.sched_log_view.setPlaceholderText("Execution logs & output from scheduled tasks appear here...")
+        layout.addWidget(self.sched_log_view, 1)
+
+        self._update_sched_placeholder()
+        return tab
+
+    def _update_sched_placeholder(self):
+        key = self.sched_action_combo.currentData() or "ai_prompt"
+        self.sched_payload_input.setPlaceholderText(ACTION_TYPES[key]["placeholder"])
+
+    def _on_sched_type_changed(self):
+        stype = self.sched_type_combo.currentData()
+        self.sched_interval_spin.setVisible(stype == "interval")
+
+    def _reset_scheduler_form(self):
+        self._editing_sched_id = None
+        self.sched_name_input.clear()
+        self.sched_payload_input.clear()
+        self.sched_dt_edit.setDateTime(QDateTime.currentDateTime().addSecs(300))
+        self.sched_save_btn.setText("SCHEDULE TASK")
+
+    def _save_scheduled_task(self):
+        name = self.sched_name_input.text().strip()
+        atype = self.sched_action_combo.currentData()
+        payload = self.sched_payload_input.text().strip()
+        stype = self.sched_type_combo.currentData()
+        interval = self.sched_interval_spin.value()
+        run_at = self.sched_dt_edit.dateTime().toString("yyyy-MM-dd HH:mm")
+        speak = self.sched_speak_chk.isChecked()
+
+        if atype == "terminal_command":
+            warn = (
+                "\n\nWARNING: Potentially destructive command pattern detected!"
+                if is_potentially_dangerous_command(payload)
+                else ""
+            )
+            ans = QMessageBox.question(
+                self,
+                "Approve Scheduled Terminal Command",
+                f"Approve scheduling this terminal command to run automatically?\n\n{payload}\n\nSchedule: {SCHEDULE_TYPES[stype]} @ {run_at}{warn}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            save_scheduled_task(
+                name=name,
+                action_type=atype,
+                payload=payload,
+                next_run_at=run_at,
+                schedule_type=stype,
+                interval_minutes=interval,
+                enabled=True,
+                speak_result=speak,
+                task_id=self._editing_sched_id,
+            )
+            self._reset_scheduler_form()
+            self.refresh_scheduled_tasks()
+        except Exception as err:
+            QMessageBox.warning(self, "Schedule Error", str(err))
+
+    def refresh_scheduled_tasks(self):
+        self.sched_list.clear()
+        for t in list_scheduled_tasks():
+            state = "ON " if t["enabled"] else "OFF"
+            rep = f"Every {t['interval_minutes']}m" if t["schedule_type"] == "interval" else SCHEDULE_TYPES.get(t["schedule_type"], t["schedule_type"])
+            item = QListWidgetItem(
+                f"[{state}]  {t['name']}   |   {t['action_type']}   |   {rep}   |   Next: {t['next_run_at']}   |   Last: {t['last_status']}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, t)
+            self.sched_list.addItem(item)
+
+        logs = list_scheduled_logs(limit=15)
+        if logs:
+            lines = [f"[{ran}] {tname} ({st}): {out[:220]}" for _, _, tname, ran, st, out in logs]
+            self.sched_log_view.setPlainText("\n".join(lines))
+
+    def _preview_sched_output(self, item):
+        t = item.data(Qt.ItemDataRole.UserRole)
+        if not t:
+            return
+        body = (
+            f"TASK: {t['name']} (#{t['id']})\n"
+            f"ACTION: {t['action_type']} -> {t['payload']}\n"
+            f"NEXT RUN: {t['next_run_at']} ({t['schedule_type']})\n"
+            f"LAST RUN: {t['last_run_at'] or 'Never'} [{t['last_status']}]\n"
+            + ("-" * 45) + "\n"
+            + (t["last_output"] or "(No execution output yet.)")
+        )
+        self.sched_log_view.setPlainText(body)
+
+    def _edit_selected_sched(self, *_):
+        item = self.sched_list.currentItem()
+        if not item:
+            return
+        t = item.data(Qt.ItemDataRole.UserRole)
+        self._editing_sched_id = t["id"]
+        self.sched_name_input.setText(t["name"])
+        idx = self.sched_action_combo.findData(t["action_type"])
+        if idx >= 0:
+            self.sched_action_combo.setCurrentIndex(idx)
+        self.sched_payload_input.setText(t["payload"])
+        sidx = self.sched_type_combo.findData(t["schedule_type"])
+        if sidx >= 0:
+            self.sched_type_combo.setCurrentIndex(sidx)
+        self.sched_interval_spin.setValue(int(t["interval_minutes"] or 30))
+        dt = QDateTime.fromString(t["next_run_at"], "yyyy-MM-dd HH:mm")
+        if dt.isValid():
+            self.sched_dt_edit.setDateTime(dt)
+        self.sched_speak_chk.setChecked(t["speak_result"])
+        self.sched_save_btn.setText("UPDATE TASK")
+
+    def _toggle_selected_sched(self):
+        item = self.sched_list.currentItem()
+        if not item:
+            return
+        t = item.data(Qt.ItemDataRole.UserRole)
+        set_scheduled_task_enabled(t["id"], not t["enabled"])
+        self.refresh_scheduled_tasks()
+
+    def _delete_selected_sched(self):
+        item = self.sched_list.currentItem()
+        if not item:
+            return
+        t = item.data(Qt.ItemDataRole.UserRole)
+        delete_scheduled_task(t["id"])
+        if self._editing_sched_id == t["id"]:
+            self._reset_scheduler_form()
+        self.refresh_scheduled_tasks()
+
+    def _run_selected_sched_now(self):
+        item = self.sched_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Selection", "Select a scheduled task to run.")
+            return
+        t = item.data(Qt.ItemDataRole.UserRole)
+        self.sched_log_view.setPlainText(f"[Running scheduled task '{t['name']}' in background...]")
+        self.run_scheduled_now_signal.emit(t)
 
     # ==========================================
     # 4.2 REMINDERS & ALARMS

@@ -244,8 +244,11 @@ def export_calendar_ics(output_path):
     for ev_id, ev_date, ev_time, title, notes in events:
         dt_clean = ev_date.replace("-", "")
         if ev_time and ":" in ev_time:
-            tm_clean = ev_time.replace(":", "")[:4] + "00"
-            dtstart = f"{dt_clean}T{tm_clean}"
+            t_parts = ev_time.strip().split(":")
+            hh = t_parts[0].zfill(2)[:2]
+            mm = t_parts[1].zfill(2)[:2]
+            ss = t_parts[2].zfill(2)[:2] if len(t_parts) > 2 else "00"
+            dtstart = f"{dt_clean}T{hh}{mm}{ss}"
         else:
             dtstart = dt_clean
         safe_title = title.replace("\n", " ")

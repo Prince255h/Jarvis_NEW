@@ -26,7 +26,12 @@ def _safe_eval_math(node):
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPS:
-        return _SAFE_OPS[type(node.op)](_safe_eval_math(node.left), _safe_eval_math(node.right))
+        left = _safe_eval_math(node.left)
+        right = _safe_eval_math(node.right)
+        if isinstance(node.op, ast.Pow):
+            if abs(right) > 1000 or (abs(left) > 1_000_000 and abs(right) > 20):
+                raise ValueError("Exponent too large for safe calculation (max exponent is 1000).")
+        return _SAFE_OPS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPS:
         return _SAFE_OPS[type(node.op)](_safe_eval_math(node.operand))
     raise ValueError("Only basic numeric math expressions are allowed.")

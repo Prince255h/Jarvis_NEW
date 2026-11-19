@@ -13,8 +13,11 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QComboBox,
     QTextEdit,
+    QFileDialog,
 )
 from PySide6.QtCore import Qt, Signal
+
+from tools.exporter import build_session_markdown, export_markdown, export_text_to_pdf
 
 from core.memory import (
     search_messages,
@@ -78,11 +81,17 @@ class MemoryManager(QWidget):
         open_btn.clicked.connect(self._open_selected_session)
         self.sum_btn = QPushButton("SUMMARIZE SESSION")
         self.sum_btn.clicked.connect(self._summarize_selected_session)
+        exp_md_btn = QPushButton("EXPORT .MD")
+        exp_md_btn.clicked.connect(lambda: self._export_selected_session("md"))
+        exp_pdf_btn = QPushButton("EXPORT .PDF")
+        exp_pdf_btn.clicked.connect(lambda: self._export_selected_session("pdf"))
         del_btn = QPushButton("DELETE SESSION")
         del_btn.setObjectName("danger_button")
         del_btn.clicked.connect(self._delete_selected_session)
         btns.addWidget(open_btn)
         btns.addWidget(self.sum_btn)
+        btns.addWidget(exp_md_btn)
+        btns.addWidget(exp_pdf_btn)
         btns.addStretch()
         btns.addWidget(del_btn)
 
@@ -109,6 +118,24 @@ class MemoryManager(QWidget):
             return
         sid, _ = item.data(Qt.ItemDataRole.UserRole)
         self.session_selected.emit(sid)
+
+    def _export_selected_session(self, fmt: str):
+        item = self.session_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Selection", "Select a conversation session first.")
+            return
+        sid, _ = item.data(Qt.ItemDataRole.UserRole)
+        md_content = build_session_markdown(session_id=sid)
+        if fmt == "pdf":
+            path, _ = QFileDialog.getSaveFileName(self, "Export Session to PDF", "jarvis_chat.pdf", "PDF Files (*.pdf)")
+            if path:
+                export_text_to_pdf(md_content, path, title="J.A.R.V.I.S Conversation")
+                QMessageBox.information(self, "Exported", f"PDF saved to:\n{path}")
+        else:
+            path, _ = QFileDialog.getSaveFileName(self, "Export Session to Markdown", "jarvis_chat.md", "Markdown (*.md)")
+            if path:
+                export_markdown(md_content, path)
+                QMessageBox.information(self, "Exported", f"Markdown saved to:\n{path}")
 
     def _summarize_selected_session(self):
         if self._worker is not None:

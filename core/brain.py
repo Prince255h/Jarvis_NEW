@@ -135,18 +135,20 @@ if GEMINI_API_KEY:
 # SMART TASK CLASSIFICATION & MODEL ROUTING (1.3)
 # ==========================================
 
-_CODE_KEYWORDS = (
-    "code", "python", "javascript", "typescript", "java", "c++", "rust", "sql",
-    "debug", "traceback", "exception", "syntaxerror", "git ", "github", "regex",
-    "refactor", "function", "class ", "docker", "linux", "bash", "powershell",
-    "html", "css", "api", "algorithm", "bug", "compile",
+_CODE_PATTERN = re.compile(
+    r"\b(?:code|coding|python|javascript|typescript|java|c\+\+|rust|sql|"
+    r"debug|debugging|traceback|exception|syntaxerror|git|github|regex|"
+    r"refactor|function|class|docker|linux|bash|powershell|"
+    r"html|css|api|apis|algorithm|bug|bugs|compile|compiler)\b",
+    re.IGNORECASE,
 )
 
-_CYBER_KEYWORDS = (
-    "owasp", "xss", "sqli", "sql injection", "csrf", "ssrf", "cve-", "cwe-",
-    "vulnerability", "pentest", "bug bounty", "firewall", "siem", "log analysis",
-    "http header", "csp", "hsts", "jwt", "nmap", "burp", "cybersecurity",
-    "hardening", "malware", "phishing", "threat", "security audit",
+_CYBER_PATTERN = re.compile(
+    r"\b(?:owasp|xss|sqli|sql\s+injection|csrf|ssrf|cve-\d+|cwe-\d+|"
+    r"vulnerability|vulnerabilities|pentest|bug\s+bounty|firewall|siem|"
+    r"log\s+analysis|http\s+header|csp|hsts|jwt|nmap|burp|cybersecurity|"
+    r"hardening|malware|phishing|security\s+audit)\b",
+    re.IGNORECASE,
 )
 
 
@@ -159,12 +161,13 @@ def classify_task(message, image_path=None, document_context=None, web_context=N
     if web_context:
         return "web"
 
-    lower = (message or "").lower()
-    if any(k in lower for k in _CYBER_KEYWORDS):
+    text = message or ""
+    lower = text.lower()
+    if _CYBER_PATTERN.search(text):
         return "cybersecurity"
-    if any(k in lower for k in _CODE_KEYWORDS) or "```" in lower:
+    if _CODE_PATTERN.search(text) or "```" in text:
         return "coding"
-    if len(lower.split()) <= 10 and not any(w in lower for w in ("explain", "analyze", "compare", "write", "detailed", "summarize")):
+    if len(lower.split()) <= 10 and not any(w in lower for w in ("explain", "analyze", "compare", "write", "detailed", "summarize", "summary")):
         return "quick"
     return "general"
 
@@ -204,7 +207,15 @@ def get_smart_provider_order(task_type, mode=None):
 _MEMORY_PATTERNS = [
     (re.compile(r"\bmy name is ([A-Za-z][A-Za-z0-9 _-]{1,40})", re.IGNORECASE), "profile", "User's name is {0}"),
     (re.compile(r"\bcall me ([A-Za-z][A-Za-z0-9 _-]{1,30})", re.IGNORECASE), "profile", "User prefers to be called {0}"),
-    (re.compile(r"\bi am a[n]? ([A-Za-z0-9 ,/_-]{3,60})", re.IGNORECASE), "profile", "User is a {0}"),
+    (
+        re.compile(
+            r"\bi(?:'m| am) a[n]? ((?:software|web|python|full[- ]?stack|backend|frontend|cybersecurity|security|ai|ml|data|computer science|college|university|high school)\s+[A-Za-z0-9 _-]{2,40}|(?:developer|engineer|student|programmer|designer|researcher|analyst|pentester)\b)",
+            re.IGNORECASE,
+        ),
+        "profile",
+        "User is a {0}",
+    ),
+    (re.compile(r"\bi work as a[n]? ([A-Za-z0-9 ,/_-]{3,50})", re.IGNORECASE), "profile", "User works as a {0}"),
     (re.compile(r"\bi prefer ([^.!?\n]{4,100})", re.IGNORECASE), "preference", "User prefers {0}"),
     (re.compile(r"\bremember that ([^.!?\n]{4,160})", re.IGNORECASE), "note", "{0}"),
 ]

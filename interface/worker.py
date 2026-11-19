@@ -142,6 +142,101 @@ class JarvisWorker(QThread):
                 final_text = f"{prefix}\n\n{answer}".strip() if prefix else answer
                 self.task_completed.emit(self.extra.get("title", "AI RESULT"), final_text)
 
+            elif self.task == "http_audit":
+                from tools.cybersec import fetch_and_analyze_url_headers
+
+                report = fetch_and_analyze_url_headers(self.message)
+                self.task_completed.emit("HTTP HEADER AUDIT", report)
+
+            elif self.task == "run_command":
+                from tools.computer import run_approved_command
+
+                res = run_approved_command(self.message)
+                parts = [f"$ {self.message}\n[Exit Code: {res['returncode']}]"]
+                if res["stdout"]:
+                    parts.append(res["stdout"])
+                if res["stderr"]:
+                    parts.append(f"[STDERR]\n{res['stderr']}")
+                self.task_completed.emit("TERMINAL", "\n".join(parts))
+
+            elif self.task == "agent_mode":
+                from core.agent import run_agent_goal
+
+                answer = run_agent_goal(self.message, on_step=self.chunk_received.emit)
+                self.stream_finished.emit("AGENT MODE", answer)
+                self.response_received.emit(answer)
+
+            elif self.task == "rag_index":
+                from tools.rag import index_folder
+
+                stats = index_folder(self.message)
+                summary = (
+                    f"Indexed folder: {stats['folder']}\n"
+                    f"Files indexed: {stats['files_indexed']} | Chunks created: {stats['chunks_added']} | Skipped: {stats['skipped']}"
+                )
+                self.task_completed.emit("KNOWLEDGE BASE", summary)
+
+            elif self.task == "rag_ask":
+                from tools.rag import format_rag_context
+
+                ctx = format_rag_context(self.message, top_k=5)
+                if not ctx:
+                    self.task_completed.emit("KNOWLEDGE BASE", "No indexed documents matched your query. Index a folder first in 05 // AUTOMATION -> Knowledge Base.")
+                elif self.extra.get("stream_to_chat", False):
+                    provider_name, full_response = stream_jarvis(
+                        f"Answer the user's question using ONLY the local knowledge base excerpts below, citing source file names:\n\nQuestion: {self.message}",
+                        self.chunk_received.emit,
+                        self.stream_reset.emit,
+                        document_context=ctx,
+                        include_history=False,
+                        save_to_memory=True,
+                    )
+                    self.stream_finished.emit(f"{provider_name} [RAG]", full_response)
+                else:
+                    ans = ask_jarvis(
+                        f"Answer using the local knowledge base excerpts below and cite source filenames:\n\nQuestion: {self.message}",
+                        document_context=ctx,
+                        include_history=False,
+                        save_to_memory=False,
+                    )
+                    self.task_completed.emit("KNOWLEDGE BASE ANSWER", ans)
+
+            elif self.task == "python_run":
+                from tools.cybersec import run_python_snippet
+
+                res = run_python_snippet(self.message, timeout=10)
+                lines = [f"[Python Runner — Exit Code: {res['returncode']}]"]
+                if res["stdout"]:
+                    lines.append("\n--- STDOUT ---\n" + res["stdout"])
+                if res["stderr"]:
+                    lines.append("\n--- STDERR ---\n" + res["stderr"])
+                if not res["stdout"] and not res["stderr"]:
+                    lines.append("(No output)")
+                self.task_completed.emit("PYTHON RUN", "\n".join(lines))
+
+            elif self.task == "dns_ssl_audit":
+                from tools.cybersec import full_domain_security_report
+
+                rep = full_domain_security_report(self.message)
+                self.task_completed.emit("DNS & SSL REPORT", rep)
+
+            elif self.task == "weather_fetch":
+                from tools.weather import fetch_weather
+
+                w = fetch_weather(self.message or "")
+                self.task_completed.emit("WEATHER", w["summary"])
+
+            elif self.task == "run_scheduled_task":
+                from core.scheduler import execute_scheduled_task
+
+                task_dict = self.extra.get("task_dict")
+                if not task_dict:
+                    raise ValueError("Missing scheduled task payload.")
+                res = execute_scheduled_task(task_dict)
+                self.extra["result"] = res
+                header = f"SCHEDULED TASK: {res['name']} [{res['status']}]"
+                self.task_completed.emit(header, res["output"])
+
             else:
                 self.error_occurred.emit(f"Unknown worker task: {self.task}")
 

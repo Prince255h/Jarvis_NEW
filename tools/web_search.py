@@ -148,8 +148,57 @@ def extract_youtube_video_id(url_or_id: str) -> str:
     raise ValueError("Could not extract a valid YouTube video ID from the provided URL.")
 
 
+def _parse_caption_response(cap_url: str) -> str:
+    """Fetch caption track as JSON3 or XML timedtext and return clean transcript text."""
+    # Try JSON3 format first (most reliable)
+    sep = "&" if "?" in cap_url else "?"
+    try:
+        j_resp = requests.get(f"{cap_url}{sep}fmt=json3", headers=HEADERS, timeout=12)
+        if j_resp.ok and j_resp.text.strip().startswith("{"):
+            payload = j_resp.json()
+            segs = []
+            for ev in payload.get("events", []):
+                for seg in ev.get("segs", []):
+                    t = (seg.get("utf8") or "").replace("\n", " ").strip()
+                    if t:
+                        segs.append(t)
+            if segs:
+                return " ".join(segs)[:16000]
+    except Exception:
+        pass
+
+    # Fallback to XML timedtext
+    try:
+        x_resp = requests.get(cap_url, headers=HEADERS, timeout=12)
+        if x_resp.ok and x_resp.text.strip().startswith("<"):
+            root = ET.fromstring(x_resp.text)
+            segments = [
+                html.unescape("".join(el.itertext())).replace("\n", " ").strip()
+                for el in root.findall(".//text")
+            ]
+            transcript = " ".join(s for s in segments if s)
+            if transcript:
+                return transcript[:16000]
+    except Exception:
+        pass
+
+    return ""
+
+
+def _pick_caption_track(tracks: list) -> dict | None:
+    if not tracks:
+        return None
+    for tr in tracks:
+        if str(tr.get("languageCode", "")).startswith("en") and tr.get("kind") != "asr":
+            return tr
+    for tr in tracks:
+        if str(tr.get("languageCode", "")).startswith("en"):
+            return tr
+    return tracks[0]
+
+
 def fetch_youtube_video_info(url_or_id: str) -> dict:
-    """Fetch YouTube title, channel, description, and captions/transcript if available."""
+    """Fetch YouTube title, channel, description, and captions/transcript with Innertube fallback."""
     video_id = extract_youtube_video_id(url_or_id)
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -177,47 +226,71 @@ def fetch_youtube_video_info(url_or_id: str) -> dict:
     except Exception:
         pass
 
-    # 2. Fetch watch page to extract description and caption track URL
+    # 2. Try YouTube Innertube player API (ANDROID client often returns working caption tracks)
     try:
-        page_resp = requests.get(watch_url, headers=HEADERS, timeout=15)
-        page_resp.raise_for_status()
-        page_html = page_resp.text
-
-        # Extract shortDescription from ytInitialPlayerResponse
-        desc_match = re.search(r'"shortDescription":"((?:\\.|[^"\\])*)"', page_html)
-        if desc_match:
-            try:
-                info["description"] = json.loads(f'"{desc_match.group(1)}"')[:3000]
-            except Exception:
-                pass
-
-        # Extract captionTracks JSON array if present
-        cap_match = re.search(r'"captionTracks":(\[.*?\])', page_html)
-        if cap_match:
-            try:
-                tracks = json.loads(cap_match.group(1))
-                chosen = None
-                for tr in tracks:
-                    if str(tr.get("languageCode", "")).startswith("en"):
-                        chosen = tr
-                        break
-                if not chosen and tracks:
-                    chosen = tracks[0]
-
-                if chosen and chosen.get("baseUrl"):
-                    cap_resp = requests.get(chosen["baseUrl"], headers=HEADERS, timeout=12)
-                    if cap_resp.ok and cap_resp.text.strip():
-                        root = ET.fromstring(cap_resp.text)
-                        segments = [
-                            html.unescape("".join(el.itertext())).replace("\n", " ").strip()
-                            for el in root.findall(".//text")
-                        ]
-                        transcript = " ".join(s for s in segments if s)
-                        info["transcript"] = transcript[:16000]
-            except Exception:
-                pass
+        it_resp = requests.post(
+            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            json={
+                "context": {
+                    "client": {
+                        "clientName": "ANDROID",
+                        "clientVersion": "19.09.37",
+                        "hl": "en",
+                        "gl": "US",
+                    }
+                },
+                "videoId": video_id,
+            },
+            headers={"User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip"},
+            timeout=12,
+        )
+        if it_resp.ok:
+            pdata = it_resp.json()
+            vd = pdata.get("videoDetails", {})
+            if vd.get("title"):
+                info["title"] = vd["title"]
+            if vd.get("author"):
+                info["author"] = vd["author"]
+            if vd.get("shortDescription"):
+                info["description"] = vd["shortDescription"][:3000]
+            tracks = (
+                pdata.get("captions", {})
+                .get("playerCaptionsTracklistRenderer", {})
+                .get("captionTracks", [])
+            )
+            chosen = _pick_caption_track(tracks)
+            if chosen and chosen.get("baseUrl"):
+                info["transcript"] = _parse_caption_response(chosen["baseUrl"])
     except Exception:
         pass
+
+    # 3. Fallback to watch page HTML scraping if description or transcript is still missing
+    if not info["description"] or not info["transcript"]:
+        try:
+            page_resp = requests.get(watch_url, headers=HEADERS, timeout=15)
+            page_resp.raise_for_status()
+            page_html = page_resp.text
+
+            if not info["description"]:
+                desc_match = re.search(r'"shortDescription":"((?:\\.|[^"\\])*)"', page_html)
+                if desc_match:
+                    try:
+                        info["description"] = json.loads(f'"{desc_match.group(1)}"')[:3000]
+                    except Exception:
+                        pass
+
+            if not info["transcript"]:
+                cap_match = re.search(r'"captionTracks":(\[.*?\])', page_html)
+                if cap_match:
+                    try:
+                        tracks = json.loads(cap_match.group(1))
+                        chosen = _pick_caption_track(tracks)
+                        if chosen and chosen.get("baseUrl"):
+                            info["transcript"] = _parse_caption_response(chosen["baseUrl"])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     return info
 
