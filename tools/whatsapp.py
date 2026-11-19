@@ -4,8 +4,13 @@ Features:
 - Guaranteed Chrome Foreground & Input Focus:
   - Windows station/desktop attachment (WinSta0\\default)
   - Thread input attachment and Alt-key foreground unlock
-- Intelligent Tab Search & Switch:
-  - If Chrome is open on another tab (e.g. YouTube), automatically uses Chrome Tab Search (Ctrl+Shift+A) to switch to WhatsApp Web
+- Intelligent Tab Search & Seamless Tab Opening:
+  - If WhatsApp Web tab is open, switches to it via Chrome Tab Search (Ctrl+Shift+A)
+  - If closed, opens a new tab (Ctrl+T) and navigates to https://web.whatsapp.com directly in active Chrome
+- Dynamic Visual Loading Detection (No Blind Spamming):
+  - Actively polls screen framebuffer (~2ms per check) for the green WhatsApp header/search UI
+  - Intelligently waits for WhatsApp Web to finish syncing chats before executing any actions
+  - Never clicks on loading splash screens or blank pages
 - Precision Coordinate Targeting:
   - Dynamic display scaling with exact offsets measured on live WhatsApp Web UI
   - Search bar: (left + min(210, width * 0.11), top + height * 0.165)
@@ -30,6 +35,7 @@ from typing import Callable, Optional, Tuple
 
 import pyautogui
 import pyperclip
+from PIL import ImageGrab
 
 from tools.computer import find_chrome_executable, open_url_in_chrome
 from core.memory import (
@@ -209,6 +215,59 @@ def get_window_title(hwnd: int) -> str:
     return ""
 
 
+def is_whatsapp_ui_ready() -> bool:
+    """Inspect primary screen to check if WhatsApp Web interface has fully loaded."""
+    _attach_interactive_desktop()
+    try:
+        # Check top-left area: bbox (60, 80, 220, 160)
+        im = ImageGrab.grab(bbox=(60, 80, 220, 160))
+        green_count = 0
+        for x in range(0, im.width, 2):
+            for y in range(0, im.height, 2):
+                r, g, b = im.getpixel((x, y))[:3]
+                if g > 120 and r < 75 and b < 100:
+                    green_count += 1
+                    if green_count > 25:
+                        return True
+        return False
+    except Exception:
+        return True
+
+
+def wait_for_whatsapp_ready(
+    timeout: float = 35.0,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Intelligently wait until WhatsApp Web UI has fully loaded and synced (no blind clicking)."""
+    def log(m):
+        if on_status:
+            try:
+                on_status(m)
+            except Exception:
+                pass
+
+    log("Waiting for WhatsApp Web to finish loading and syncing chats...")
+    start_time = time.time()
+    last_log_time = 0.0
+
+    while time.time() - start_time < timeout:
+        if is_whatsapp_ui_ready():
+            elapsed = round(time.time() - start_time, 1)
+            log(f"WhatsApp Web interface is fully loaded and ready ({elapsed}s).")
+            time.sleep(0.6)  # Short settling delay
+            return True
+
+        if time.time() - last_log_time >= 3.0:
+            elapsed = int(time.time() - start_time)
+            log(f"WhatsApp Web is still loading... ({elapsed}s)")
+            last_log_time = time.time()
+
+        time.sleep(0.4)
+
+    log("Warning: WhatsApp Web loading timed out or requires QR code authentication.")
+    return False
+
+
 def ensure_whatsapp_tab(on_status: Optional[Callable[[str], None]] = None) -> int:
     """Ensure Chrome is running, foregrounded, and switched to WhatsApp Web tab."""
     def log(m):
@@ -224,22 +283,23 @@ def ensure_whatsapp_tab(on_status: Optional[Callable[[str], None]] = None) -> in
     if not hwnd:
         log("Google Chrome is not running. Launching WhatsApp Web in Chrome...")
         open_url_in_chrome(WHATSAPP_WEB_URL)
-        time.sleep(7.0)
+        time.sleep(2.0)
         hwnd = find_chrome_hwnd()
         if hwnd:
             focus_and_maximize_chrome(hwnd)
+        wait_for_whatsapp_ready(timeout=35.0, on_status=on_status)
         return hwnd or 0
 
     focus_and_maximize_chrome(hwnd)
     time.sleep(0.3)
 
     title = get_window_title(hwnd).lower()
-    if "whatsapp" in title:
-        log("WhatsApp Web tab is active in Google Chrome.")
+    if "whatsapp" in title and is_whatsapp_ui_ready():
+        log("WhatsApp Web tab is active and ready in Google Chrome.")
         return hwnd
 
-    # Chrome is open on another tab (e.g. YouTube). Use Chrome Tab Search (Ctrl+Shift+A) to switch!
-    log("Switching Chrome active tab to WhatsApp Web via Tab Search...")
+    # 1. Try Chrome Tab Search (Ctrl+Shift+A) to switch to open tab
+    log("Checking open tabs for WhatsApp Web via Tab Search...")
     pyautogui.hotkey("ctrl", "shift", "a")
     time.sleep(0.4)
     pyperclip.copy("WhatsApp")
@@ -250,14 +310,22 @@ def ensure_whatsapp_tab(on_status: Optional[Callable[[str], None]] = None) -> in
 
     # Re-verify window title
     title = get_window_title(hwnd).lower()
-    if "whatsapp" not in title:
-        log("WhatsApp tab not found in open tabs. Navigating to WhatsApp Web...")
-        open_url_in_chrome(WHATSAPP_WEB_URL)
-        time.sleep(6.5)
-        hwnd = find_chrome_hwnd()
-        if hwnd:
-            focus_and_maximize_chrome(hwnd)
+    if "whatsapp" in title and is_whatsapp_ui_ready():
+        log("Switched to WhatsApp Web tab successfully.")
+        return hwnd
 
+    # 2. Tab is closed: Open a new tab in active Chrome and navigate cleanly!
+    log("WhatsApp tab was closed. Opening a new tab in Chrome and loading WhatsApp Web...")
+    focus_and_maximize_chrome(hwnd)
+    pyautogui.hotkey("ctrl", "t")
+    time.sleep(0.4)
+    pyperclip.copy(WHATSAPP_WEB_URL)
+    pyautogui.hotkey("ctrl", "v")
+    time.sleep(0.2)
+    pyautogui.press("enter")
+
+    # 3. Dynamically wait until WhatsApp Web UI is completely rendered
+    wait_for_whatsapp_ready(timeout=35.0, on_status=on_status)
     return hwnd
 
 
@@ -268,6 +336,7 @@ def open_whatsapp_web() -> str:
     hwnd = find_chrome_hwnd()
     if hwnd:
         focus_and_maximize_chrome(hwnd)
+        wait_for_whatsapp_ready(timeout=35.0)
     return f"Opened WhatsApp Web in {browser_used}."
 
 
@@ -302,8 +371,9 @@ def _worker_send_via_phone_url(
         log(f"Opening WhatsApp Web conversation for +{phone_digits} in Google Chrome...")
         open_url_in_chrome(url)
 
-        # Allow WhatsApp Web to load the conversation (~7-8 seconds)
-        time.sleep(7.5)
+        # Wait intelligently for WhatsApp Web to load
+        wait_for_whatsapp_ready(timeout=35.0, on_status=on_status)
+
         hwnd = find_chrome_hwnd()
         if hwnd:
             focus_and_maximize_chrome(hwnd)
@@ -315,7 +385,6 @@ def _worker_send_via_phone_url(
         if is_call:
             log(f"Chat open with +{phone_digits}. Initiating {call_type} call in Chrome...")
             time.sleep(1.0)
-            # Call button coordinates in top-right header
             if "vid" in call_type.lower():
                 call_x = right - 205
                 call_y = top + 126
@@ -383,7 +452,7 @@ def _worker_search_and_execute(
         left, top, right, bottom, width, height = get_chrome_rect(hwnd)
 
         # ----------------------------------------------------
-        # 1. FOCUS SEARCH BAR (Precision coordinate click)
+        # 1. FOCUS SEARCH BAR (Precision coordinate click + shortcut)
         # ----------------------------------------------------
         log("Focusing WhatsApp Web search bar...")
         search_x = left + min(210, int(width * 0.11))
@@ -392,7 +461,11 @@ def _worker_search_and_execute(
         # Move and click inside "Search or start a new chat" pill
         pyautogui.moveTo(search_x, search_y, duration=0.2)
         pyautogui.click()
-        time.sleep(0.3)
+        time.sleep(0.2)
+
+        # Also trigger official WhatsApp Web search shortcut
+        pyautogui.hotkey("ctrl", "alt", "/")
+        time.sleep(0.2)
 
         # Clear existing search query
         pyautogui.hotkey("ctrl", "a")
@@ -413,14 +486,13 @@ def _worker_search_and_execute(
         # 3. SELECT CONTACT & OPEN CHAT
         # ----------------------------------------------------
         log(f"Opening chat with '{contact_name}'...")
-        # Coordinate click on first search result card directly below filter row
         first_result_x = search_x
         first_result_y = top + int(height * 0.29)
         pyautogui.moveTo(first_result_x, first_result_y, duration=0.15)
         pyautogui.click()
         time.sleep(0.25)
 
-        # Also press Down then Enter to guarantee selection
+        # Press Down then Enter to guarantee selection
         pyautogui.press("down")
         time.sleep(0.25)
         pyautogui.press("enter")
@@ -447,14 +519,12 @@ def _worker_search_and_execute(
             pyautogui.moveTo(call_x, call_y, duration=0.25)
             pyautogui.click(call_x, call_y)
             time.sleep(0.35)
-            # Second click in case focus was on conversation body
             pyautogui.click(call_x, call_y)
             log(f"Initiated {call_type} call to '{contact_name}' on WhatsApp Web.")
             return
 
         if message:
             log(f"Typing message for '{contact_name}'...")
-            # Click directly into message box
             msg_x = left + int(width * 0.48)
             msg_y = bottom - 50
             pyautogui.moveTo(msg_x, msg_y, duration=0.2)

@@ -1510,21 +1510,23 @@ class JarvisWindow(QMainWindow):
 
         # 2. "message <contact> on whatsapp saying <text>" / "send message to <contact> on whatsapp: <text>" / "whatsapp <contact> <text>"
         m_w_msg1 = re.match(
-            r"^(?:send\s+(?:a\s+)?(?:whatsapp(?:\s+message|\s+msg)?|message|msg)\s+to\s+|message\s+|msg\s+)"
+            r"^(?:send\s+(?:a\s+)?(?:whatsapp(?:\s+message|\s+msg)?|message|msg)\s+to\s+|message\s+|msg\s+|tell\s+)"
             r"([a-z0-9 _+]+?)"
             r"(?:\s+on\s+whatsapp)?"
-            r"(?:\s*(?::|saying|that)\s*|\s+)"
+            r"(?:\s*(?::|saying|that|tha|to\s+say)\s*|\s+)"
             r"(.+)$",
             lower,
         )
         m_w_msg2 = re.match(
-            r"^whatsapp(?:\s+to)?\s+([a-z0-9 _+]+?)(?:\s*(?::|saying|that)\s*|\s+)(.+)$",
+            r"^whatsapp(?:\s+to)?\s+([a-z0-9 _+]+?)(?:\s*(?::|saying|that|tha)\s*|\s+)(.+)$",
             lower,
         )
         m_w_target = m_w_msg1 or m_w_msg2
         if m_w_target:
             contact_part = m_w_target.group(1).strip()
             msg_part = m_w_target.group(2).strip()
+            # Clean possible leading typo artifacts like 'tha ' or 'that '
+            msg_part = re.sub(r"^(?:tha|that|saying|to\s+say)\s+", "", msg_part, flags=re.IGNORECASE).strip()
             if contact_part and msg_part and not contact_part.startswith("call"):
                 self.add_message("YOU", message)
                 from tools.whatsapp import send_whatsapp_message
