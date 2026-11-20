@@ -29,13 +29,59 @@ import re
 import sys
 import time
 import ctypes
+import shutil
+import subprocess
 import threading
 import urllib.parse
 from typing import Callable, Optional, Tuple
 
-import pyautogui
-import pyperclip
-from PIL import ImageGrab
+class _DummyPyAutoGUI:
+    PAUSE = 0.08
+    FAILSAFE = True
+
+    def hotkey(self, *a, **k):
+        pass
+
+    def click(self, *a, **k):
+        pass
+
+    def moveTo(self, *a, **k):
+        pass
+
+    def press(self, *a, **k):
+        pass
+
+    def write(self, *a, **k):
+        pass
+
+    def size(self):
+        return (1920, 1080)
+
+
+class _DummyPyperclip:
+    def copy(self, text):
+        pass
+
+    def paste(self):
+        return ""
+
+
+try:
+    import pyautogui
+    pyautogui.PAUSE = 0.08
+    pyautogui.FAILSAFE = True
+except Exception:
+    pyautogui = _DummyPyAutoGUI()
+
+try:
+    import pyperclip
+except Exception:
+    pyperclip = _DummyPyperclip()
+
+try:
+    from PIL import ImageGrab
+except Exception:
+    ImageGrab = None
 
 from tools.computer import find_chrome_executable, open_url_in_chrome
 from core.memory import (
@@ -44,10 +90,6 @@ from core.memory import (
     list_whatsapp_contacts,
     delete_whatsapp_contact,
 )
-
-# PyAutoGUI configuration
-pyautogui.PAUSE = 0.08
-pyautogui.FAILSAFE = True
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com"
 
@@ -130,12 +172,15 @@ def find_chrome_hwnd() -> Optional[int]:
 def get_chrome_rect(hwnd: Optional[int] = None) -> Tuple[int, int, int, int, int, int]:
     """Return (left, top, right, bottom, width, height) of Chrome or primary screen fallback."""
     _attach_interactive_desktop()
-    user32 = ctypes.windll.user32
-    sw = user32.GetSystemMetrics(0)
-    sh = user32.GetSystemMetrics(1)
+    sw, sh = 1920, 1080
+    try:
+        sw, sh = pyautogui.size()
+    except Exception:
+        pass
 
-    if hwnd:
+    if sys.platform == "win32" and hwnd:
         try:
+            user32 = ctypes.windll.user32
             r = RECT()
             if user32.GetWindowRect(hwnd, ctypes.byref(r)):
                 w = r.right - r.left
@@ -149,8 +194,21 @@ def get_chrome_rect(hwnd: Optional[int] = None) -> Tuple[int, int, int, int, int
 
 
 def focus_and_maximize_chrome(hwnd: Optional[int] = None) -> bool:
-    """Bulletproof Win32 foreground activation, maximize and thread input attachment."""
+    """Foreground activation and maximize for Google Chrome across Windows & Linux."""
     if sys.platform != "win32":
+        if sys.platform.startswith("linux"):
+            for cmd in [
+                ["wmctrl", "-a", "Google Chrome"],
+                ["wmctrl", "-a", "Chromium"],
+                ["xdotool", "search", "--onlyvisible", "--class", "google-chrome", "windowactivate"],
+                ["xdotool", "search", "--onlyvisible", "--class", "chromium", "windowactivate"],
+            ]:
+                if shutil.which(cmd[0]):
+                    try:
+                        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return True
+                    except Exception:
+                        pass
         return False
 
     _attach_interactive_desktop()

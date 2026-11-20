@@ -42,6 +42,7 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
     def nativeEventFilter(self, eventType, message):
         if sys.platform == "win32":
             try:
+                import ctypes.wintypes
                 msg = ctypes.wintypes.MSG.from_address(int(message))
                 if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
                     self._callback()

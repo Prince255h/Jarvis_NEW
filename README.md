@@ -11,8 +11,25 @@ A modern desktop AI assistant built with Python and PySide6 featuring multi-prov
 6. **Cybersecurity Center**: OWASP Top 10 learning, vulnerability explanations, security log analyzer, HTTP header/request analyzer, local network info, security checklists, bug bounty report drafting, and legal lab-based study assistance.
 7. **Advanced Intelligence**: Multimodal image understanding, native PDF/DOCX/text analysis, web search (`/search`), YouTube summarization (`/yt`), multilingual responses, plugin system (`plugins/`), and custom slash commands.
 
-## Quick Start (Windows)
+## Quick Start
+
+### Windows
 1. Double-click **`Run_JARVIS.bat`** — it automatically creates a virtual environment, installs all packages from `requirements.txt`, creates a starter `.env`, and launches JARVIS.
 2. Open `.env` (or copy `.env.example` to `.env`) and add your `GEMINI_API_KEY` and/or `GROQ_API_KEY` (or run Ollama locally).
 3. Inside chat, type `/help` to view all built-in, plugin, and custom slash commands.
+
+### Linux & macOS
+1. Open a terminal in the project directory, grant execution permissions, and run:
+   ```bash
+   chmod +x run_jarvis.sh
+   ./run_jarvis.sh
+   ```
+2. The script automatically verifies Python 3.10+, provisions `venv/`, installs all required dependencies from `requirements.txt`, creates a starter `.env`, and launches J.A.R.V.I.S.
+3. Add your `GEMINI_API_KEY` or `GROQ_API_KEY` to `.env` (or use local Ollama with `ollama run qwen3.5:4b`).
+
+> [!TIP]
+> On Ubuntu/Debian, ensure standard Qt GUI & sound prerequisites are installed:
+> ```bash
+> sudo apt update && sudo apt install -y python3 python3-venv python3-pip libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 pulseaudio-utils
+> ```
 

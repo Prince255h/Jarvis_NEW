@@ -21,40 +21,78 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 # ==========================================
 
 APP_ALIASES = {
-    "notepad": ["notepad.exe"],
-    "calculator": ["calc.exe"],
-    "calc": ["calc.exe"],
-    "paint": ["mspaint.exe"],
+    "notepad": ["notepad.exe", "gedit", "kate", "mousepad", "nano", "xed"],
+    "calculator": ["calc.exe", "gnome-calculator", "kcalc", "xcalc", "galculator"],
+    "calc": ["calc.exe", "gnome-calculator", "kcalc", "xcalc"],
+    "paint": ["mspaint.exe", "gimp", "drawing", "kolourpaint", "pinta"],
     "mspaint": ["mspaint.exe"],
-    "explorer": ["explorer.exe"],
-    "files": ["explorer.exe"],
-    "cmd": ["cmd.exe"],
-    "terminal": ["powershell.exe"],
-    "powershell": ["powershell.exe"],
-    "task manager": ["taskmgr.exe"],
-    "taskmgr": ["taskmgr.exe"],
-    "vscode": ["code"],
-    "code": ["code"],
-    "chrome": ["chrome"],
-    "edge": ["msedge"],
-    "settings": ["ms-settings:"],
-    "word": ["winword"],
-    "excel": ["excel"],
+    "explorer": ["explorer.exe", "nautilus", "dolphin", "thunar", "nemo", "pcmanfm"],
+    "files": ["explorer.exe", "nautilus", "dolphin", "thunar", "nemo", "pcmanfm"],
+    "cmd": ["cmd.exe", "bash", "sh"],
+    "terminal": ["powershell.exe", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "kitty", "xterm"],
+    "powershell": ["pwsh", "powershell.exe"],
+    "task manager": ["taskmgr.exe", "gnome-system-monitor", "plasma-systemmonitor", "htop"],
+    "taskmgr": ["taskmgr.exe", "gnome-system-monitor"],
+    "vscode": ["code", "codium"],
+    "code": ["code", "codium"],
+    "chrome": ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"],
+    "edge": ["microsoft-edge", "microsoft-edge-stable", "msedge"],
+    "settings": ["ms-settings:", "gnome-control-center", "systemsettings"],
+    "word": ["winword", "libreoffice", "wps"],
+    "excel": ["excel", "libreoffice", "et"],
     "spotify": ["spotify"],
 }
 
 
+def launch_default_target(target: str) -> bool:
+    """Open a file, folder, URL, or registered protocol handler using the platform-native launcher."""
+    if hasattr(os, "startfile"):
+        try:
+            os.startfile(target)
+            return True
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            subprocess.Popen(["open", target], shell=False)
+            return True
+        except Exception:
+            pass
+    else:
+        # Linux / Unix
+        xdg_open = shutil.which("xdg-open")
+        if xdg_open:
+            try:
+                subprocess.Popen([xdg_open, target], shell=False)
+                return True
+            except Exception:
+                pass
+    return False
+
+
 def find_chrome_executable() -> str | None:
-    """Locate Google Chrome executable on Windows (or PATH) so JARVIS always prefers Chrome."""
+    """Locate Google Chrome or Chromium executable on Windows, Linux, or macOS."""
     candidates = [
         shutil.which("chrome"),
         shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        # Standard Linux paths
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+        # Windows paths
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        # macOS paths
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
     for path in candidates:
-        if path and os.path.isfile(path):
+        if path and os.path.isfile(path) and os.access(path, os.X_OK if sys.platform != "win32" else os.F_OK):
             return path
 
     if sys.platform == "win32":
@@ -75,17 +113,25 @@ def find_chrome_executable() -> str | None:
 
 
 def open_url_in_chrome(url: str) -> str:
-    """Always open URL in Google Chrome (falling back to default browser only if Chrome isn't installed)."""
+    """Always open URL in Google Chrome (falling back to system browser if Chrome is absent)."""
     chrome_exe = find_chrome_executable()
     if chrome_exe:
         subprocess.Popen([chrome_exe, url], shell=False)
         return "Google Chrome"
+
+    # Fallback to system open on Linux / macOS
+    if sys.platform != "win32":
+        xdg_open = shutil.which("xdg-open")
+        if xdg_open:
+            subprocess.Popen([xdg_open, url], shell=False)
+            return "Default Browser"
+
     webbrowser.open(url)
     return "default browser"
 
 
 def open_application(app_name: str) -> str:
-    """Safely launch a known application or executable path."""
+    """Safely launch a known application or executable path across Windows, Linux, and macOS."""
     raw = (app_name or "").strip()
     if not raw:
         raise ValueError("Please specify an application name.")
@@ -98,22 +144,26 @@ def open_application(app_name: str) -> str:
             return f"Launched Google Chrome ({chrome_exe})"
 
     if key in APP_ALIASES:
-        target = APP_ALIASES[key][0]
-        if target.endswith(":"):
-            os.startfile(target)
-            return f"Opened Windows {raw}."
-        try:
-            subprocess.Popen([target], shell=False)
-            return f"Launched application: {raw} ({target})"
-        except FileNotFoundError:
-            os.startfile(target)
+        candidates = APP_ALIASES[key]
+        for target in candidates:
+            if target.endswith(":"):
+                if sys.platform == "win32" and launch_default_target(target):
+                    return f"Opened Windows {raw}."
+                continue
+            resolved = shutil.which(target.split()[0])
+            if resolved:
+                cmd = [resolved] + target.split()[1:]
+                subprocess.Popen(cmd, shell=False)
+                return f"Launched application: {raw} ({resolved})"
+        # If no binary in PATH was found, try launching default
+        if launch_default_target(candidates[0]):
             return f"Opened application: {raw}"
 
     # Direct file path check
     candidate = Path(raw)
     if candidate.exists():
-        os.startfile(str(candidate))
-        return f"Opened: {candidate}"
+        if launch_default_target(str(candidate)):
+            return f"Opened: {candidate}"
 
     # Fallback: try PATH lookup without arbitrary shell injection
     resolved = shutil.which(raw)
@@ -284,7 +334,7 @@ def execute_folder_organization(folder_path: str) -> str:
 
 
 # ==========================================
-# 2.7 CONTROL SYSTEM VOLUME (Windows)
+# 2.7 CONTROL SYSTEM VOLUME (Windows, Linux, macOS)
 # ==========================================
 
 VK_VOLUME_MUTE = 0xAD
@@ -295,36 +345,85 @@ KEYEVENTF_KEYUP = 0x0002
 
 def _send_vk(vk_code: int, repeat: int = 1):
     if sys.platform != "win32":
-        raise RuntimeError("System volume control is implemented for Windows.")
+        return
     user32 = ctypes.windll.user32
     for _ in range(max(1, repeat)):
         user32.keybd_event(vk_code, 0, 0, 0)
         user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
 
 
+def _send_linux_volume(action: str, value: int = 5) -> bool:
+    """Control audio volume on Linux via pactl (PulseAudio / PipeWire) or amixer (ALSA)."""
+    pactl = shutil.which("pactl")
+    amixer = shutil.which("amixer")
+    try:
+        if pactl:
+            if action == "up":
+                subprocess.run([pactl, "set-sink-volume", "@DEFAULT_SINK@", f"+{value}%"], check=False, capture_output=True)
+            elif action == "down":
+                subprocess.run([pactl, "set-sink-volume", "@DEFAULT_SINK@", f"-{value}%"], check=False, capture_output=True)
+            elif action == "mute":
+                subprocess.run([pactl, "set-sink-mute", "@DEFAULT_SINK@", "toggle"], check=False, capture_output=True)
+            elif action == "set":
+                subprocess.run([pactl, "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"], check=False, capture_output=True)
+            return True
+        elif amixer:
+            if action == "up":
+                subprocess.run([amixer, "set", "Master", f"{value}%+"], check=False, capture_output=True)
+            elif action == "down":
+                subprocess.run([amixer, "set", "Master", f"{value}%-"], check=False, capture_output=True)
+            elif action == "mute":
+                subprocess.run([amixer, "set", "Master", "toggle"], check=False, capture_output=True)
+            elif action == "set":
+                subprocess.run([amixer, "set", "Master", f"{value}%"], check=False, capture_output=True)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def volume_up(steps: int = 5) -> str:
-    _send_vk(VK_VOLUME_UP, repeat=steps)
+    if sys.platform == "win32":
+        _send_vk(VK_VOLUME_UP, repeat=steps)
+    elif sys.platform.startswith("linux"):
+        _send_linux_volume("up", value=steps * 2)
+    elif sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", f"set volume output volume ((output volume of (get volume settings)) + {steps * 2})"], check=False, capture_output=True)
     return f"Volume increased (+{steps * 2}% approx)."
 
 
 def volume_down(steps: int = 5) -> str:
-    _send_vk(VK_VOLUME_DOWN, repeat=steps)
+    if sys.platform == "win32":
+        _send_vk(VK_VOLUME_DOWN, repeat=steps)
+    elif sys.platform.startswith("linux"):
+        _send_linux_volume("down", value=steps * 2)
+    elif sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", f"set volume output volume ((output volume of (get volume settings)) - {steps * 2})"], check=False, capture_output=True)
     return f"Volume decreased (-{steps * 2}% approx)."
 
 
 def volume_mute_toggle() -> str:
-    _send_vk(VK_VOLUME_MUTE, repeat=1)
+    if sys.platform == "win32":
+        _send_vk(VK_VOLUME_MUTE, repeat=1)
+    elif sys.platform.startswith("linux"):
+        _send_linux_volume("mute")
+    elif sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", "set volume output muted not (output muted of (get volume settings))"], check=False, capture_output=True)
     return "Toggled system mute."
 
 
 def set_volume_percent(percent: int) -> str:
-    """Set approximate Windows system volume (0-100%) using reliable media key steps."""
+    """Set approximate system volume (0-100%) across Windows, Linux, and macOS."""
     percent = max(0, min(100, int(percent)))
-    # Reset to 0 then step up in 2% increments
-    _send_vk(VK_VOLUME_DOWN, repeat=50)
-    steps = round(percent / 2)
-    if steps > 0:
-        _send_vk(VK_VOLUME_UP, repeat=steps)
+    if sys.platform == "win32":
+        _send_vk(VK_VOLUME_DOWN, repeat=50)
+        steps = round(percent / 2)
+        if steps > 0:
+            _send_vk(VK_VOLUME_UP, repeat=steps)
+    elif sys.platform.startswith("linux"):
+        _send_linux_volume("set", value=percent)
+    elif sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", f"set volume output volume {percent}"], check=False, capture_output=True)
     return f"System volume set to approximately {percent}%."
 
 
@@ -371,9 +470,17 @@ def run_approved_command(command: str, timeout: int = 30, cwd=None) -> dict:
     if not command:
         raise ValueError("Command cannot be empty.")
 
+    if sys.platform == "win32":
+        cmd_args = ["powershell", "-NoProfile", "-Command", command]
+        shell_flag = False
+    else:
+        shell_exe = shutil.which("bash") or shutil.which("sh") or "/bin/sh"
+        cmd_args = [shell_exe, "-c", command]
+        shell_flag = False
+
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", command] if sys.platform == "win32" else command,
-        shell=(sys.platform != "win32"),
+        cmd_args,
+        shell=shell_flag,
         capture_output=True,
         text=True,
         timeout=timeout,
