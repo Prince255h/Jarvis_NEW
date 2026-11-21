@@ -211,6 +211,7 @@ class JarvisWindow(QMainWindow):
         self.speech_buffer = ""
         self._in_stream_code_block = False
         self._pending_backticks = ""
+        self._pending_bracket = ""
 
         # Chat attachments (7.1 Image, 7.2/7.3 PDF/Doc)
         self.attached_image_path = None
@@ -1743,6 +1744,7 @@ class JarvisWindow(QMainWindow):
     def start_stream_display(self):
         self._in_stream_code_block = False
         self._pending_backticks = ""
+        self._pending_bracket = ""
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.stream_start_position = cursor.position()
@@ -1759,7 +1761,7 @@ class JarvisWindow(QMainWindow):
         self.chat_display.ensureCursorVisible()
 
     def _filter_speech_stream_chunk(self, text_chunk: str) -> str:
-        """Strip fenced ```code``` blocks across arbitrarily split chunks while preserving prose."""
+        """Strip fenced ```code``` blocks, brackets, emojis, and action tags across streaming chunks."""
         combined = self._pending_backticks + text_chunk
         self._pending_backticks = ""
 
@@ -1777,8 +1779,23 @@ class JarvisWindow(QMainWindow):
             if not self._in_stream_code_block and seg:
                 prose_parts.append(seg)
         filtered = "".join(prose_parts)
-        # Strip action tags from speech so audio is natural prose
-        return re.sub(r"\[ACTION:[^\]]*\]", "", filtered)
+
+        # Prepend pending bracket fragment from previous chunk if any
+        if hasattr(self, "_pending_bracket") and self._pending_bracket:
+            filtered = self._pending_bracket + filtered
+            self._pending_bracket = ""
+
+        # If there is an unclosed [ that could be an action tag or link, hold it
+        last_bracket = filtered.rfind("[")
+        if last_bracket != -1 and "]" not in filtered[last_bracket:]:
+            if len(filtered) - last_bracket < 150 and "\n" not in filtered[last_bracket:]:
+                self._pending_bracket = filtered[last_bracket:]
+                filtered = filtered[:last_bracket]
+
+        # Strip action tags completely
+        filtered = re.sub(r"\[\s*[A-Z_]{2,}\b[^\]]*\]", "", filtered)
+        filtered = re.sub(r"\[\s*[A-Za-z0-9_-]+\s*[:|][^\]]*\]", "", filtered)
+        return filtered
 
     def append_stream_chunk(self, chunk):
         if self.stream_cursor is None:
@@ -1827,6 +1844,7 @@ class JarvisWindow(QMainWindow):
         self.speech_buffer = ""
         self._in_stream_code_block = False
         self._pending_backticks = ""
+        self._pending_bracket = ""
         self.remove_stream_display()
         self.start_stream_display()
 
@@ -1837,6 +1855,7 @@ class JarvisWindow(QMainWindow):
         self.speech_buffer = ""
         self._in_stream_code_block = False
         self._pending_backticks = ""
+        self._pending_bracket = ""
 
         # Parse and execute any [ACTION: ...] directives emitted by AI
         card_content = self._execute_action_directives(full_response)
@@ -1952,6 +1971,7 @@ class JarvisWindow(QMainWindow):
         self.speech_buffer = ""
         self._in_stream_code_block = False
         self._pending_backticks = ""
+        self._pending_bracket = ""
         self.remove_stream_display()
         self.ai_core.set_state("error")
         self.add_message("ERROR", str(error))
