@@ -135,6 +135,8 @@ When the user asks you to perform an action on their computer, affirm the action
   [ACTION: WHATSAPP_OPEN]
 - Open a desktop application:
   [ACTION: OPEN_APP app="<app_name>"]
+- Open a fresh new tab in Google Chrome:
+  [ACTION: OPEN_URL url="chrome://newtab"]
 - Open a website or URL in Google Chrome:
   [ACTION: OPEN_URL url="<url_or_domain>"]
 - Search Google in Google Chrome:

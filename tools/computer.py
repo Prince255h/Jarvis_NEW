@@ -112,21 +112,23 @@ def find_chrome_executable() -> str | None:
     return None
 
 
-def open_url_in_chrome(url: str) -> str:
+def open_url_in_chrome(url: str = "") -> str:
     """Always open URL in Google Chrome (falling back to system browser if Chrome is absent)."""
     chrome_exe = find_chrome_executable()
+    target_args = [url] if url else []
     if chrome_exe:
-        subprocess.Popen([chrome_exe, url], shell=False)
+        subprocess.Popen([chrome_exe] + target_args, shell=False)
         return "Google Chrome"
 
     # Fallback to system open on Linux / macOS
+    target_fallback = url or "about:blank"
     if sys.platform != "win32":
         xdg_open = shutil.which("xdg-open")
         if xdg_open:
-            subprocess.Popen([xdg_open, url], shell=False)
+            subprocess.Popen([xdg_open, target_fallback], shell=False)
             return "Default Browser"
 
-    webbrowser.open(url)
+    webbrowser.open(target_fallback)
     return "default browser"
 
 
@@ -193,37 +195,60 @@ SITE_SHORTCUTS = {
     "portswigger": "https://portswigger.net/web-security",
     "tryhackme": "https://tryhackme.com",
     "hackthebox": "https://www.hackthebox.com",
+    "newtab": "chrome://newtab",
+    "new tab": "chrome://newtab",
+    "new_tab": "chrome://newtab",
+    "blank": "about:blank",
 }
+
+
+def open_new_tab(url: str = "chrome://newtab") -> str:
+    """Open a fresh new tab in Google Chrome."""
+    target = url or "chrome://newtab"
+    return open_website(target)
 
 
 def open_website(url_or_name: str) -> str:
     raw = (url_or_name or "").strip()
     if not raw:
-        raise ValueError("Please specify a website URL or name.")
+        # Default empty call to opening a new tab
+        browser_used = open_url_in_chrome("chrome://newtab")
+        return f"Opened new tab in {browser_used}."
 
     key = raw.lower()
+    # Check for direct new tab intent shortcuts
+    if key in ("new tab", "newtab", "new_tab", "tab", "open tab", "a new tab"):
+        browser_used = open_url_in_chrome("chrome://newtab")
+        return f"Opened new tab in {browser_used}."
+
     if key in SITE_SHORTCUTS:
         url = SITE_SHORTCUTS[key]
+    elif key in ("about:blank", "about:newtab", "about:home"):
+        url = key
+    elif re.match(r"^(?:chrome|edge)://[a-z0-9\-_/]+$", key):
+        url = key
     else:
         if any(ch.isspace() for ch in raw):
             raise ValueError(f"Invalid website URL (contains whitespace): {raw}")
 
-        # Reject explicit non-HTTP(S) schemes like javascript:, file:, data:, vbscript:
+        # Block dangerous non-HTTP(S) schemes (javascript, file, data, vbscript, etc.)
         scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*):", raw)
-        if scheme_match and scheme_match.group(1).lower() not in ("http", "https"):
-            raise ValueError(f"Blocked unsupported URL scheme: {scheme_match.group(1)}:")
+        if scheme_match:
+            scheme = scheme_match.group(1).lower()
+            if scheme not in ("http", "https"):
+                raise ValueError(f"Blocked unsupported URL scheme: {scheme}:")
 
         url = raw if raw.startswith(("http://", "https://")) else "https://" + raw
 
-    parsed = urllib.parse.urlparse(url)
-    host = (parsed.hostname or "").lower()
-    if (
-        parsed.scheme not in ("http", "https")
-        or not host
-        or (host != "localhost" and "." not in host)
-        or not re.fullmatch(r"[a-z0-9.-]+", host)
-    ):
-        raise ValueError(f"Invalid website URL: {url}")
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme not in ("http", "https")
+            or not host
+            or (host != "localhost" and "." not in host)
+            or not re.fullmatch(r"[a-z0-9.-]+", host)
+        ):
+            raise ValueError(f"Invalid website URL: {url}")
 
     browser_used = open_url_in_chrome(url)
     return f"Opened in {browser_used}: {url}"

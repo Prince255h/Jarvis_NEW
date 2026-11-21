@@ -107,6 +107,7 @@ from core.tts import JarvisTTS
 
 from tools.computer import (
     open_application,
+    open_new_tab,
     open_website,
     search_google,
     search_youtube,
@@ -1612,6 +1613,21 @@ class JarvisWindow(QMainWindow):
             self.tts.speak(res)
             return True
 
+        # "open a new tab" / "open new tab in chrome" / "new tab"
+        m_tab = re.match(
+            r"^(?:(?:open|launch)\s+)?(?:a\s+)?new\s+tab(?:\s+(?:in|on)\s+(?:chrome|google\s+chrome|browser))?$",
+            lower,
+        )
+        if m_tab:
+            self.add_message("YOU", message)
+            try:
+                res = open_new_tab()
+                self.add_message("J.A.R.V.I.S", res, subtitle="AUTOMATION")
+                self.tts.speak("Opening a new tab in Google Chrome.")
+            except Exception as err:
+                self.add_message("ERROR", str(err))
+            return True
+
         # "open <known website or app>" (including e.g. "open youtube on chrome")
         web_tlds = (
             ".com", ".org", ".net", ".io", ".dev", ".ai", ".edu", ".gov",
@@ -1908,12 +1924,14 @@ class JarvisWindow(QMainWindow):
                         res = open_application(app)
                         return f"\n> ⚡ **[ACTION EXECUTED]** *{res}*"
 
-                elif atype == "OPEN_URL":
-                    from tools.computer import open_website
-                    url = attrs.get("url", "")
-                    if url:
+                elif atype in ("OPEN_URL", "OPEN_NEW_TAB", "NEW_TAB", "OPEN_TAB"):
+                    from tools.computer import open_website, open_new_tab
+                    url = attrs.get("url", "").strip()
+                    if url and url.lower() not in ("about:blank", "about:newtab", "chrome://newtab", "new tab", "newtab"):
                         res = open_website(url)
-                        return f"\n> 🌐 **[ACTION EXECUTED]** *{res}*"
+                    else:
+                        res = open_new_tab(url or "chrome://newtab")
+                    return f"\n> 🌐 **[ACTION EXECUTED]** *{res}*"
 
                 elif atype == "SEARCH_GOOGLE":
                     from tools.computer import search_google
