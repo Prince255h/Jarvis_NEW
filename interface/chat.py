@@ -55,6 +55,8 @@ from interface.automation_page import AutomationToolsPage
 from interface.settings_page import SettingsPage
 from interface.spotlight import SpotlightDialog, GlobalHotkeyFilter
 from interface.themes import build_stylesheet, hex_to_rgba
+from interface.cyber_widgets import CyberRobotAvatar, SymmetricalAudioWaveform
+from interface.home_page import HomePage
 from interface.widgets import (
     HUDCanvasWidget,
     AICoreWidget,
@@ -195,12 +197,11 @@ class JarvisWindow(QMainWindow):
         self.setWindowTitle("J.A.R.V.I.S // MARK IX NEURAL HUD")
         self.resize(1360, 860)
 
-        # Persisted theme & accent (3.5, 3.6) — default to movie-grade Stark Gold or Ultron Crimson
+        # Persisted theme & accent — default to signature Arc Reactor Cyan (#00d2ff)
         self.theme_mode = get_setting("theme_mode", "dark") or "dark"
         saved_accent = get_setting("accent_color", None)
-        # Upgrade old bright neon cyan defaults to cinematic Stark Gold / Ultron Crimson
-        if not saved_accent or saved_accent.lower() in ("#00d9ff", "#00e5ff", "#ff3366"):
-            saved_accent = "#cf2538" if get_personality() == "ULTRON" else "#d99b38"
+        if not saved_accent:
+            saved_accent = "#cf2538" if get_personality() == "ULTRON" else "#00d2ff"
         self.accent_color = saved_accent
 
         # Worker & streaming state
@@ -291,47 +292,65 @@ class JarvisWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
+        # Hidden or background-managed telemetry widgets for backward-compat
+        self.ai_core = AICoreWidget(accent=self.accent_color)
+        self.waveform = AudioWaveformWidget(accent=self.accent_color)
+        self.status_pill = StatusPulseLabel()
+
         # -----------------------------------------
-        # LEFT COMMAND DOCK (CLEAN 4-ITEM SIDEBAR)
+        # LEFT COMMAND DOCK (AUTHENTIC CYBER HUD SIDEBAR)
         # -----------------------------------------
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(232)
+        self.sidebar.setFixedWidth(248)
         sb_layout = QVBoxLayout(self.sidebar)
-        sb_layout.setContentsMargins(14, 14, 14, 14)
-        sb_layout.setSpacing(6)
+        sb_layout.setContentsMargins(14, 16, 14, 16)
+        sb_layout.setSpacing(8)
 
-        # 6-Layer Iron Man Arc Reactor Core
-        core_wrap = QHBoxLayout()
-        core_wrap.addStretch()
-        self.ai_core = AICoreWidget(accent=self.accent_color)
-        core_wrap.addWidget(self.ai_core)
-        core_wrap.addStretch()
-        sb_layout.addLayout(core_wrap)
+        # Profile / Logo Header (Robot Avatar + JARVIS + Subtitle)
+        header_frame = QWidget()
+        hdr_layout = QHBoxLayout(header_frame)
+        hdr_layout.setContentsMargins(0, 0, 0, 8)
+        hdr_layout.setSpacing(10)
 
-        self.logo_label = QLabel("J.A.R.V.I.S")
-        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.logo_label.setObjectName("logo")
-        sb_layout.addWidget(self.logo_label)
+        self.sidebar_avatar = CyberRobotAvatar(accent=self.accent_color, size=46)
+        self.sidebar_avatar.clicked.connect(lambda: self.switch_page("home"))
 
-        # Mirrored Spectrum Audio Waveform
-        self.waveform = AudioWaveformWidget(accent=self.accent_color)
-        sb_layout.addWidget(self.waveform)
+        brand_col = QVBoxLayout()
+        brand_col.setSpacing(1)
+        brand_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        self.logo_label = QLabel("JARVIS")
+        self.logo_label.setObjectName("sidebar_brand_title")
+        self.logo_label.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+        self.logo_label.setStyleSheet("color: #ffffff; letter-spacing: 1px;")
 
-        status_wrap = QHBoxLayout()
-        status_wrap.addStretch()
-        self.status_pill = StatusPulseLabel()
-        status_wrap.addWidget(self.status_pill)
-        status_wrap.addStretch()
-        sb_layout.addLayout(status_wrap)
+        self.subtitle_label = QLabel("Your Personal AI Assistant")
+        self.subtitle_label.setFont(QFont("Segoe UI", 8))
+        self.subtitle_label.setStyleSheet("color: #7a92ad;")
 
-        sb_layout.addSpacing(12)
+        brand_col.addWidget(self.logo_label)
+        brand_col.addWidget(self.subtitle_label)
 
+        hdr_layout.addWidget(self.sidebar_avatar)
+        hdr_layout.addLayout(brand_col)
+        hdr_layout.addStretch()
+        sb_layout.addWidget(header_frame)
+
+        # Divider hairline
+        div = QFrame()
+        div.setFixedHeight(1)
+        div.setStyleSheet("background: rgba(0, 210, 255, 0.18);")
+        sb_layout.addWidget(div)
+        sb_layout.addSpacing(4)
+
+        # Navigation Buttons (Inspired directly by the reference image)
         nav_specs = [
-            ("chat", "01 // CHAT"),
-            ("workspace", "02 // WORKSPACE"),
-            ("dev_cyber", "03 // DEV && CYBER"),
-            ("system", "04 // SYSTEM"),
+            ("home", "🏠  Home"),
+            ("chat", "💬  Chat"),
+            ("voice", "🎙  Voice Control"),
+            ("tools", "⊞  Tools"),
+            ("settings", "⚙  Settings"),
+            ("about", "ℹ  About"),
         ]
 
         for key, label in nav_specs:
@@ -344,8 +363,36 @@ class JarvisWindow(QMainWindow):
 
         sb_layout.addStretch()
 
+        # Online Status Card
+        status_card = QFrame()
+        status_card.setObjectName("sidebar_status_card")
+        sc_layout = QVBoxLayout(status_card)
+        sc_layout.setContentsMargins(12, 10, 12, 10)
+        sc_layout.setSpacing(2)
+
+        dot_row = QHBoxLayout()
+        dot_row.setSpacing(6)
+        dot_lbl = QLabel("🟢")
+        dot_lbl.setFont(QFont("Segoe UI Emoji", 9))
+        dot_text = QLabel("Online")
+        dot_text.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        dot_text.setStyleSheet("color: #00e676;")
+        dot_row.addWidget(dot_lbl)
+        dot_row.addWidget(dot_text)
+        dot_row.addStretch()
+
+        ready_text = QLabel("Ready to help!")
+        ready_text.setFont(QFont("Segoe UI", 8))
+        ready_text.setStyleSheet("color: #8da4be;")
+
+        sc_layout.addLayout(dot_row)
+        sc_layout.addWidget(ready_text)
+        sb_layout.addWidget(status_card)
+
+        # Quick theme switcher
         self.quick_theme_btn = QPushButton("☀  TITANIUM LIGHT")
         self.quick_theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.quick_theme_btn.setFixedHeight(30)
         self.quick_theme_btn.clicked.connect(self._toggle_theme_quick)
         sb_layout.addWidget(self.quick_theme_btn)
 
@@ -401,6 +448,37 @@ class JarvisWindow(QMainWindow):
         self.toggle_rail_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_rail_btn.clicked.connect(self._toggle_telemetry_rail)
 
+        # Window Controls (Minimize, Maximize/Restore, Close)
+        self.min_btn = QPushButton("🗕")
+        self.min_btn.setFixedSize(30, 26)
+        self.min_btn.setToolTip("Minimize")
+        self.min_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.min_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.06); color: #c5d4e8; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; font-weight: bold; } "
+            "QPushButton:hover { background: rgba(0,210,255,0.25); color: #ffffff; border-color: #00d2ff; }"
+        )
+        self.min_btn.clicked.connect(self.showMinimized)
+
+        self.max_btn = QPushButton("🗖")
+        self.max_btn.setFixedSize(30, 26)
+        self.max_btn.setToolTip("Maximize / Restore")
+        self.max_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.max_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.06); color: #c5d4e8; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; font-weight: bold; } "
+            "QPushButton:hover { background: rgba(0,210,255,0.25); color: #ffffff; border-color: #00d2ff; }"
+        )
+        self.max_btn.clicked.connect(self._toggle_maximize_window)
+
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedSize(30, 26)
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.06); color: #c5d4e8; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; font-weight: bold; } "
+            "QPushButton:hover { background: rgba(235,50,50,0.85); color: #ffffff; border-color: #ff3b3b; }"
+        )
+        self.close_btn.clicked.connect(self.close)
+
         tb.addWidget(self.toggle_sidebar_btn)
         tb.addWidget(self.hud_brand_label)
         tb.addSpacing(6)
@@ -412,17 +490,34 @@ class JarvisWindow(QMainWindow):
         tb.addWidget(self.top_engine_metric)
         tb.addWidget(self.hud_clock_label)
         tb.addWidget(self.toggle_rail_btn)
+        tb.addSpacing(4)
+        tb.addWidget(self.min_btn)
+        tb.addWidget(self.max_btn)
+        tb.addWidget(self.close_btn)
         right_layout.addWidget(topbar)
 
-        # Stacked Pages Container (4 Clean Hubs)
+        # Stacked Pages Container
         content_wrap = QWidget()
         content_wrap.setObjectName("page_root")
         content_layout = QVBoxLayout(content_wrap)
-        content_layout.setContentsMargins(16, 12, 16, 12)
+        content_layout.setContentsMargins(14, 10, 14, 10)
 
         self.pages = QStackedWidget()
 
+        # 1. Cybernetic Hero Home Page
+        self.home_page = HomePage(accent=self.accent_color)
+        self.home_page.command_submitted.connect(self._handle_home_command)
+        self.home_page.voice_toggled.connect(self._toggle_voice_listening)
+        self.home_page.open_youtube_signal.connect(lambda: self._execute_quick_action("open_youtube"))
+        self.home_page.search_google_signal.connect(lambda: self._execute_quick_action("search_google"))
+        self.home_page.play_music_signal.connect(lambda: self._execute_quick_action("play_music"))
+        self.home_page.check_time_signal.connect(lambda: self._execute_quick_action("check_time"))
+        self.home_page.shutdown_pc_signal.connect(lambda: self._execute_quick_action("shutdown_pc"))
+
+        # 2. Conversational Chat Console
         self.chat_page = self.create_chat_page()
+
+        # Sub-pages for tools hub
         self.productivity_page = ProductivityPage()
         self.productivity_page.announce_signal.connect(self.tts.speak)
         self.productivity_page.run_scheduled_now_signal.connect(self._dispatch_scheduled_task)
@@ -450,25 +545,22 @@ class JarvisWindow(QMainWindow):
         self.settings_page.preset_identity_selected.connect(self.apply_identity_preset)
         self.settings_page.weather_city_changed.connect(lambda _c: self.refresh_weather())
 
-        # Grouped Hubs (All features preserved under 4 clean sections)
-        self.workspace_hub = QTabWidget()
-        self.workspace_hub.addTab(self.productivity_page, "Productivity & Scheduler")
-        self.workspace_hub.addTab(self.automation_page, "Automation, RAG & Tools")
+        # 3. Dedicated Voice Control Page
+        self.voice_page = self._create_voice_control_page()
 
-        self.dev_cyber_hub = QTabWidget()
-        self.dev_cyber_hub.addTab(self.coding_page, "Code Studio")
-        self.dev_cyber_hub.addTab(self.cybersec_page, "Cyber Defense & Vault")
+        # 4. Grouped Tools Hub
+        self.tools_hub = self._create_tools_hub()
 
-        self.system_hub = QTabWidget()
-        self.system_hub.addTab(self.system_providers_page, "Telemetry & AI Engines")
-        self.system_hub.addTab(self.memory_page, "Memory & History")
-        self.system_hub.addTab(self.settings_page, "HUD Config & Voice")
+        # 5. About Page
+        self.about_page = self._create_about_page()
 
         self.page_map = {
+            "home": self.home_page,
             "chat": self.chat_page,
-            "workspace": self.workspace_hub,
-            "dev_cyber": self.dev_cyber_hub,
-            "system": self.system_hub,
+            "voice": self.voice_page,
+            "tools": self.tools_hub,
+            "settings": self.settings_page,
+            "about": self.about_page,
         }
 
         for widget in self.page_map.values():
@@ -480,7 +572,7 @@ class JarvisWindow(QMainWindow):
         root_layout.addWidget(self.sidebar)
         root_layout.addWidget(right_shell, 1)
 
-        self.switch_page("chat")
+        self.switch_page("home")
 
     def _create_system_and_providers_page(self):
         page = QWidget()
@@ -489,6 +581,321 @@ class JarvisWindow(QMainWindow):
         layout.addWidget(self.dashboard_page, 3)
         layout.addWidget(self.providers_page, 2)
         return page
+
+    def _create_tools_hub(self):
+        hub = QTabWidget()
+        hub.setObjectName("tools_hub_tabs")
+        hub.addTab(self.productivity_page, "📅 Productivity & Scheduler")
+        hub.addTab(self.automation_page, "⚡ Automation & RAG")
+        hub.addTab(self.coding_page, "💻 Code Studio")
+        hub.addTab(self.cybersec_page, "🛡️ Cyber Defense & Vault")
+        hub.addTab(self.system_providers_page, "📊 Telemetry & Engines")
+        hub.addTab(self.memory_page, "🧠 Memory & History")
+        return hub
+
+    def _create_voice_control_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
+
+        # Header Banner
+        hdr = QHBoxLayout()
+        title_box = QVBoxLayout()
+        v_title = QLabel("VOICE SYNTHESIS & RECOGNITION MATRIX")
+        v_title.setObjectName("page_title")
+        v_sub = QLabel("Configure real-time neural speech profiles, latency presets, and audio harmonics.")
+        v_sub.setObjectName("subtitle")
+        title_box.addWidget(v_title)
+        title_box.addWidget(v_sub)
+        hdr.addLayout(title_box)
+        hdr.addStretch()
+        layout.addLayout(hdr)
+
+        # Center Visualizer Card
+        vis_card = QFrame()
+        vis_card.setObjectName("cyber_card")
+        vis_layout = QVBoxLayout(vis_card)
+        vis_layout.setContentsMargins(24, 20, 24, 20)
+        vis_layout.setSpacing(14)
+        vis_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.voice_page_avatar = CyberRobotAvatar(accent=self.accent_color, size=110)
+        self.voice_page_avatar.clicked.connect(self.voice_page_avatar.trigger_pulse)
+        vis_layout.addWidget(self.voice_page_avatar, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.voice_page_waveform = SymmetricalAudioWaveform(accent=self.accent_color, bars=44, height=72)
+        vis_layout.addWidget(self.voice_page_waveform, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.voice_page_status = QLabel("●  VOICE SYSTEM ACTIVE // DUAL-WING HARMONICS READY")
+        self.voice_page_status.setObjectName("status_indicator")
+        self.voice_page_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vis_layout.addWidget(self.voice_page_status, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(vis_card)
+
+        # Voice Settings Card
+        ctrl_card = QFrame()
+        ctrl_card.setObjectName("cyber_card")
+        ctrl_layout = QVBoxLayout(ctrl_card)
+        ctrl_layout.setContentsMargins(20, 16, 20, 16)
+        ctrl_layout.setSpacing(12)
+
+        ctrl_title = QLabel("NEURAL VOICE SYNTHESIS PRESETS")
+        ctrl_title.setObjectName("section_header")
+        ctrl_layout.addWidget(ctrl_title)
+
+        form_row = QHBoxLayout()
+        form_row.setSpacing(16)
+
+        # Voice Profile
+        col1 = QVBoxLayout()
+        col1.addWidget(QLabel("VOICE IDENTITY:"))
+        self.v_profile_combo = QComboBox()
+        self.v_profile_combo.addItem("Ryan Neural (British - Stark Jarvis)", "en-GB-RyanNeural")
+        self.v_profile_combo.addItem("Christopher Neural (Deep American - Ultron)", "en-US-ChristopherNeural")
+        self.v_profile_combo.addItem("Sonia Neural (British English Female)", "en-GB-SoniaNeural")
+        self.v_profile_combo.addItem("Guy Neural (American English Male)", "en-US-GuyNeural")
+        self.v_profile_combo.addItem("Jenny Neural (American English Female)", "en-US-JennyNeural")
+        for idx in range(self.v_profile_combo.count()):
+            if self.v_profile_combo.itemData(idx) == self.tts.voice:
+                self.v_profile_combo.setCurrentIndex(idx)
+                break
+        self.v_profile_combo.currentIndexChanged.connect(self._on_voice_combo_changed)
+        col1.addWidget(self.v_profile_combo)
+        form_row.addLayout(col1)
+
+        # Speech Rate
+        col2 = QVBoxLayout()
+        col2.addWidget(QLabel("SPEECH SPEED / RATE:"))
+        self.v_rate_combo = QComboBox()
+        self.v_rate_combo.addItem("0.85x (Deliberate & Measured)", "-15%")
+        self.v_rate_combo.addItem("1.00x (Standard Cinematic)", "+0%")
+        self.v_rate_combo.addItem("1.15x (Brisk Tactical)", "+15%")
+        self.v_rate_combo.addItem("1.30x (Rapid Briefing)", "+30%")
+        self.v_rate_combo.setCurrentIndex(1)
+        self.v_rate_combo.currentIndexChanged.connect(self._on_voice_rate_changed)
+        col2.addWidget(self.v_rate_combo)
+        form_row.addLayout(col2)
+
+        # Pitch
+        col3 = QVBoxLayout()
+        col3.addWidget(QLabel("VOCAL PITCH:"))
+        self.v_pitch_combo = QComboBox()
+        self.v_pitch_combo.addItem("Deep Resonance (-6Hz)", "-6Hz")
+        self.v_pitch_combo.addItem("Natural Tone (+0Hz)", "+0Hz")
+        self.v_pitch_combo.addItem("Elevated Pitch (+4Hz)", "+4Hz")
+        self.v_pitch_combo.setCurrentIndex(1)
+        self.v_pitch_combo.currentIndexChanged.connect(self._on_voice_pitch_changed)
+        col3.addWidget(self.v_pitch_combo)
+        form_row.addLayout(col3)
+
+        ctrl_layout.addLayout(form_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        test_btn = QPushButton("🔊  TEST VOCAL SYNTHESIS")
+        test_btn.setObjectName("primary_cta")
+        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.clicked.connect(self._test_voice_synthesis)
+
+        stop_btn = QPushButton("🛑  MUTE / STOP SPEECH")
+        stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_btn.clicked.connect(self.stop_speaking)
+
+        btn_row.addWidget(test_btn)
+        btn_row.addWidget(stop_btn)
+        btn_row.addStretch()
+        ctrl_layout.addLayout(btn_row)
+
+        layout.addWidget(ctrl_card)
+
+        # Commands Reference Card
+        cmd_card = QFrame()
+        cmd_card.setObjectName("cyber_card")
+        cmd_layout = QVBoxLayout(cmd_card)
+        cmd_layout.setContentsMargins(18, 14, 18, 14)
+        cmd_layout.setSpacing(6)
+
+        ref_lbl = QLabel("SUPPORTED VOCAL & ACTION PATTERNS")
+        ref_lbl.setObjectName("section_header")
+        cmd_layout.addWidget(ref_lbl)
+
+        tips = [
+            "▸ 'Open YouTube' or 'Play music on YouTube' — Launches browser streaming instantly.",
+            "▸ 'Search Google for quantum mechanics' — Opens immediate web search queries.",
+            "▸ 'Msg Priyanshu on WhatsApp that I am on my way' — Full end-to-end WhatsApp Web messaging.",
+            "▸ 'What's the weather in Tokyo?' — Live meteorological telemetry retrieval.",
+            "▸ 'Look at my screen and help me fix this' — Captures desktop viewport for Vision AI inspection.",
+            "▸ 'Set a reminder to drink water at 5pm' — Autonomous background scheduler and audio chime.",
+        ]
+        for tip in tips:
+            lbl = QLabel(tip)
+            lbl.setStyleSheet("color: #8da4be; font-size: 11px;")
+            cmd_layout.addWidget(lbl)
+
+        layout.addWidget(cmd_card)
+        layout.addStretch()
+        return page
+
+    def _on_voice_combo_changed(self):
+        voice_id = self.v_profile_combo.currentData()
+        pitch = self.v_pitch_combo.currentData()
+        self.tts.set_voice_profile(voice_id, pitch)
+        hud_sfx.play("click")
+
+    def _on_voice_rate_changed(self):
+        rate = self.v_rate_combo.currentData()
+        self.tts.set_rate(rate)
+        hud_sfx.play("click")
+
+    def _on_voice_pitch_changed(self):
+        voice_id = self.v_profile_combo.currentData()
+        pitch = self.v_pitch_combo.currentData()
+        self.tts.set_voice_profile(voice_id, pitch)
+        hud_sfx.play("click")
+
+    def _test_voice_synthesis(self):
+        who = "Ultron" if get_personality() == "ULTRON" else "J.A.R.V.I.S"
+        hud_sfx.play("pulse")
+        self.tts.speak(f"Greetings. I am {who}. All vocal synthesis systems and audio harmonics are operating at maximum fidelity.")
+
+    def _create_about_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
+
+        card = QFrame()
+        card.setObjectName("cyber_card")
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(28, 24, 28, 24)
+        c_layout.setSpacing(16)
+        c_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        about_avatar = CyberRobotAvatar(accent=self.accent_color, size=116)
+        about_avatar.clicked.connect(about_avatar.trigger_pulse)
+        c_layout.addWidget(about_avatar, 0, Qt.AlignmentFlag.AlignCenter)
+
+        title = QLabel("J.A.R.V.I.S // MARK IX NEURAL SYSTEM")
+        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        title.setStyleSheet("color: #ffffff; letter-spacing: 1.5px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        c_layout.addWidget(title)
+
+        sub = QLabel("Autonomous Tactical AI Interface & Personal Operating System")
+        sub.setFont(QFont("Segoe UI", 11))
+        sub.setStyleSheet("color: #00d2ff; font-weight: 500;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        c_layout.addWidget(sub)
+
+        desc = QLabel(
+            "Just A Rather Very Intelligent System (J.A.R.V.I.S) is a state-of-the-art AI assistant engineered "
+            "with multi-engine LLM routing (Google Gemini 2.5/2.0, Groq LLaMA 3.3, local Ollama), "
+            "low-latency Edge neural speech synthesis with streaming prefetch, automated browser workflows "
+            "with Selenium Chrome & PyAutoGUI, local vector RAG, encrypted cyber defense vault, "
+            "and an animated hardware-accelerated Cyber HUD interface inspired by Iron Man."
+        )
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setStyleSheet("color: #9ab4cf; font-size: 13px; line-height: 1.6; max-width: 780px;")
+        c_layout.addWidget(desc)
+
+        # Spec Grid
+        grid_frame = QFrame()
+        grid_frame.setStyleSheet("background: rgba(4, 10, 20, 0.6); border: 1px solid rgba(0, 210, 255, 0.15); border-radius: 10px; padding: 12px;")
+        g_layout = QVBoxLayout(grid_frame)
+        g_layout.setSpacing(8)
+
+        specs = [
+            ("Core Architecture", "Python 3.10+ / PySide6 / Hardware Accelerated Cyber HUD"),
+            ("AI Engines", "Google Gemini 2.5 Flash / Groq LLaMA 3.3 / Local Ollama (Auto-Fallback)"),
+            ("Vocal Synthesis", "Edge-TTS Neural Voice with Symmetrical Waveform Processing"),
+            ("OS Automation", "PyAutoGUI Mouse/Keyboard & Selenium Chrome WhatsApp / Web Automation"),
+            ("Hotkeys", "Ctrl+Shift+Space (Spotlight)  |  Enter (Transmit)  |  Esc (Dismiss)"),
+            ("Build Version", "Mark IX — Cybernetic HUD Edition (Build 9.4.0)"),
+        ]
+        for label, val in specs:
+            row = QHBoxLayout()
+            lbl_l = QLabel(f"●  {label}:")
+            lbl_l.setStyleSheet("color: #00d2ff; font-weight: 600; font-size: 12px;")
+            lbl_r = QLabel(val)
+            lbl_r.setStyleSheet("color: #ffffff; font-size: 12px;")
+            row.addWidget(lbl_l)
+            row.addWidget(lbl_r)
+            row.addStretch()
+            g_layout.addLayout(row)
+
+        c_layout.addWidget(grid_frame)
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    def _toggle_maximize_window(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.max_btn.setText("🗖")
+        else:
+            self.showMaximized()
+            self.max_btn.setText("🗗")
+
+    def _handle_home_command(self, text: str):
+        text = text.strip()
+        if not text:
+            return
+        # Switch to chat and transmit
+        self.switch_page("chat")
+        self.message_input.setText(text)
+        self.send_message()
+
+    def _toggle_voice_listening(self):
+        if self.tts.is_speaking:
+            self.stop_speaking()
+            return
+        hud_sfx.play("pulse")
+        if hasattr(self, "home_page"):
+            self.home_page.mic_button.set_state("listening")
+        self.tts.speak("Awaiting your directive, Sir. What can I do for you?")
+
+    def _execute_quick_action(self, action_name: str):
+        hud_sfx.play("click")
+        if action_name == "open_youtube":
+            try:
+                open_website("https://www.youtube.com")
+                self.tts.speak("Opening YouTube for you, Sir.")
+            except Exception as e:
+                self.add_message("ERROR", f"Failed to open YouTube: {e}")
+        elif action_name == "search_google":
+            try:
+                open_website("https://www.google.com")
+                self.tts.speak("Opening Google Search.")
+            except Exception as e:
+                self.add_message("ERROR", f"Failed to open Google: {e}")
+        elif action_name == "play_music":
+            try:
+                open_website("https://music.youtube.com")
+                self.tts.speak("Opening YouTube Music.")
+            except Exception as e:
+                self.add_message("ERROR", f"Failed to open YouTube Music: {e}")
+        elif action_name == "check_time":
+            now_str = datetime.now().strftime("%I:%M %p")
+            self.tts.speak(f"The current time is {now_str}, Sir.")
+            self.add_message("SYSTEM", f"Current Time: **{now_str}**", subtitle="TIME CHECK")
+        elif action_name == "shutdown_pc":
+            reply = QMessageBox.question(
+                self,
+                "Confirm System Shutdown",
+                "Are you sure you want to shut down your computer?\nEnsure all your work is saved.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.tts.speak("Initiating system shutdown. Goodbye, Sir.")
+                try:
+                    import os
+                    os.system("shutdown /s /t 15")
+                    self.add_message("SYSTEM", "System shutdown initiated (15 second timer). Run `shutdown /a` to abort.", subtitle="SHUTDOWN")
+                except Exception as e:
+                    self.add_message("ERROR", f"Shutdown command failed: {e}")
 
     # =========================================
     # CHAT PAGE + RIGHT TELEMETRY HUD RAIL
@@ -2132,19 +2539,24 @@ class JarvisWindow(QMainWindow):
         hud_sfx.play("click")
 
     def switch_page(self, key: str):
-        # Support both the 4 main hub keys and legacy sub-page keys seamlessly
         route_map = {
+            "home": ("home", None, None),
             "chat": ("chat", None, None),
-            "workspace": ("workspace", None, None),
-            "productivity": ("workspace", self.workspace_hub, 0),
-            "automation": ("workspace", self.workspace_hub, 1),
-            "dev_cyber": ("dev_cyber", None, None),
-            "coding": ("dev_cyber", self.dev_cyber_hub, 0),
-            "cybersec": ("dev_cyber", self.dev_cyber_hub, 1),
-            "system": ("system", None, None),
-            "dashboard": ("system", self.system_hub, 0),
-            "memory": ("system", self.system_hub, 1),
-            "settings": ("system", self.system_hub, 2),
+            "voice": ("voice", None, None),
+            "tools": ("tools", None, None),
+            "settings": ("settings", None, None),
+            "about": ("about", None, None),
+            # Legacy & direct shortcut mappings
+            "workspace": ("tools", self.tools_hub, 0),
+            "productivity": ("tools", self.tools_hub, 0),
+            "automation": ("tools", self.tools_hub, 1),
+            "dev_cyber": ("tools", self.tools_hub, 2),
+            "coding": ("tools", self.tools_hub, 2),
+            "cybersec": ("tools", self.tools_hub, 3),
+            "system": ("tools", self.tools_hub, 4),
+            "dashboard": ("tools", self.tools_hub, 4),
+            "providers": ("tools", self.tools_hub, 4),
+            "memory": ("tools", self.tools_hub, 5),
         }
         if key not in route_map:
             return
@@ -2152,9 +2564,9 @@ class JarvisWindow(QMainWindow):
         hub_key, sub_tabs, tab_idx = route_map[key]
         hud_sfx.play("click")
 
-        if hub_key == "workspace":
+        if key == "productivity":
             self.productivity_page.refresh_all()
-        elif hub_key == "system":
+        elif key in ("memory", "system"):
             self.memory_page.refresh()
 
         if sub_tabs is not None and tab_idx is not None:
@@ -2182,6 +2594,26 @@ class JarvisWindow(QMainWindow):
     def _sync_live_indicators(self):
         speaking = self.tts.is_speaking
         self.waveform.set_active(speaking)
+        if hasattr(self, "home_page"):
+            self.home_page.set_speaking(speaking)
+        if hasattr(self, "sidebar_avatar"):
+            if speaking:
+                self.sidebar_avatar.set_state("speaking")
+            elif self.worker is not None:
+                self.sidebar_avatar.set_state("thinking")
+            else:
+                self.sidebar_avatar.set_state("idle")
+        if hasattr(self, "voice_page_avatar"):
+            if speaking:
+                self.voice_page_avatar.set_state("speaking")
+                self.voice_page_waveform.set_active(True)
+            elif self.worker is not None:
+                self.voice_page_avatar.set_state("thinking")
+                self.voice_page_waveform.set_active(False)
+            else:
+                self.voice_page_avatar.set_state("idle")
+                self.voice_page_waveform.set_active(False)
+
         if speaking:
             self.ai_core.set_state("speaking")
             self.status_pill.set_status("VOCAL SYNTHESIS", animate=True)
@@ -2330,6 +2762,14 @@ class JarvisWindow(QMainWindow):
         self.rail_graph.set_accent(self.accent_color)
         self.dashboard_page.set_accent(self.accent_color)
 
+        if hasattr(self, "home_page"):
+            self.home_page.set_accent(self.accent_color)
+        if hasattr(self, "sidebar_avatar"):
+            self.sidebar_avatar.set_accent(self.accent_color)
+        if hasattr(self, "voice_page_avatar"):
+            self.voice_page_avatar.set_accent(self.accent_color)
+            self.voice_page_waveform.set_accent(self.accent_color)
+
         # Keep SettingsPage state synchronized with sidebar quick-toggle and identity presets
         if hasattr(self, "settings_page"):
             self.settings_page._theme = self.theme_mode
@@ -2389,6 +2829,14 @@ class JarvisWindow(QMainWindow):
         self.rail_cpu_gauge.stop_animation()
         self.rail_ram_gauge.stop_animation()
         self.status_pill.stop_animation()
+
+        if hasattr(self, "home_page"):
+            self.home_page.shutdown()
+        if hasattr(self, "sidebar_avatar"):
+            self.sidebar_avatar.stop_animation()
+        if hasattr(self, "voice_page_avatar"):
+            self.voice_page_avatar.stop_animation()
+            self.voice_page_waveform.stop_animation()
 
         if hasattr(self, "dashboard_page"):
             self.dashboard_page.shutdown()

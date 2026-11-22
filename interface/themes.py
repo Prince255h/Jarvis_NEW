@@ -2,19 +2,21 @@
 
 # Cinematic, restrained movie-accurate accents (NO cheap neon glare)
 ACCENT_PRESETS = {
+    "Arc Reactor Cyan": "#00d2ff",
     "J.A.R.V.I.S Gold": "#d99b38",
     "ULTRON Crimson": "#cf2538",
     "Stark Holo Steel": "#3e96cc",
     "Titanium Silver": "#94a3b8",
     "Tactical Emerald": "#2da878",
+    "Neon Purple": "#a855f7",
     "Obsidian Amber": "#c97a2b",
 }
 
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    color = (hex_color or "#d99b38").lstrip("#")
+    color = (hex_color or "#00d2ff").lstrip("#")
     if len(color) != 6:
-        return (217, 155, 56)
+        return (0, 210, 255)
     return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
 
 
@@ -23,7 +25,7 @@ def hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r}, {g}, {b}, {alpha})"
 
 
-def build_stylesheet(theme_mode: str = "dark", accent: str = "#d99b38") -> str:
+def build_stylesheet(theme_mode: str = "dark", accent: str = "#00d2ff") -> str:
     """Build a heavy, cinematic movie-grade Stark/Ultron stylesheet (matte obsidian + hairline steel)."""
     is_light = (theme_mode or "dark").lower() == "light"
 
@@ -283,28 +285,80 @@ def build_stylesheet(theme_mode: str = "dark", accent: str = "#d99b38") -> str:
 
         QPushButton#nav_button {{
             background-color: transparent;
-            color: {text_secondary};
-            border: none;
-            border-left: 2px solid transparent;
-            border-radius: 5px;
-            padding: 9px 11px;
+            color: #8da4be;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            padding: 10px 14px;
             text-align: left;
-            font-family: "Consolas", "Segoe UI", monospace;
-            font-size: 11.5px;
-            font-weight: bold;
-            letter-spacing: 0.9px;
+            font-family: "Segoe UI", sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
         }}
 
         QPushButton#nav_button:hover {{
-            background-color: {accent_subtle};
-            color: {text_primary};
-            border-left: 2px solid {border_med};
+            background-color: rgba(0, 210, 255, 0.10);
+            color: #ffffff;
+            border: 1px solid rgba(0, 210, 255, 0.25);
         }}
 
         QPushButton#nav_button[active="true"] {{
-            background-color: {accent_soft};
-            color: {accent};
-            border-left: 3px solid {accent};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #005ce6, stop:1 #00b4d8);
+            color: #ffffff;
+            border: 1px solid rgba(0, 210, 255, 0.65);
+            border-radius: 12px;
+            font-weight: bold;
+        }}
+
+        QFrame#cyber_card {{
+            background-color: rgba(10, 16, 28, 0.82);
+            border: 1px solid rgba(0, 210, 255, 0.24);
+            border-radius: 16px;
+        }}
+
+        QFrame#cyber_card:hover {{
+            border: 1px solid rgba(0, 210, 255, 0.45);
+        }}
+
+        QFrame#cyber_input_capsule {{
+            background-color: rgba(8, 13, 22, 0.92);
+            border: 1px solid rgba(0, 210, 255, 0.38);
+            border-radius: 22px;
+        }}
+
+        QFrame#cyber_input_capsule:focus-within {{
+            border: 1.5px solid #00d2ff;
+        }}
+
+        QLineEdit#cyber_text_input {{
+            background: transparent;
+            border: none;
+            color: #ffffff;
+            font-family: "Segoe UI", sans-serif;
+            font-size: 13px;
+            padding: 4px;
+        }}
+
+        QPushButton#cyber_send_btn {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #005ce6, stop:1 #00b4d8);
+            color: #ffffff;
+            border: none;
+            border-radius: 12px;
+            font-weight: bold;
+        }}
+
+        QPushButton#cyber_send_btn:hover {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0077ff, stop:1 #33d6ff);
+        }}
+
+        QPushButton#cyber_send_btn:pressed {{
+            background: #0044bb;
+        }}
+
+        QFrame#sidebar_status_card {{
+            background-color: rgba(10, 16, 26, 0.85);
+            border: 1px solid rgba(0, 210, 255, 0.22);
+            border-radius: 14px;
         }}
 
         QPushButton#danger_button {{
